@@ -62,7 +62,7 @@ internal class CompletedDecodedOutputVerifier {
         val sampleRate = trackFormat.integerOrNull(MediaFormat.KEY_SAMPLE_RATE)
         val channels = trackFormat.integerOrNull(MediaFormat.KEY_CHANNEL_COUNT)
         val durationUs = trackFormat.longOrNull(MediaFormat.KEY_DURATION)
-        if (!acceptedMime) fail("mime")
+        if (!acceptedMime) fail("mime:$mime")
         if (sampleRate != expectedSampleRateHz) fail("sample-rate")
         if (channels != expectedChannelCount) fail("channel-count")
         if (durationUs == null || durationUs <= 0L) fail("duration-missing")

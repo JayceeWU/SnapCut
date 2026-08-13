@@ -58,4 +58,13 @@ jobs:
           arch: x86_64
           profile: pixel_2
           disable-animations: true
-          script: ./android/gradlew -p android :snap-cut-media:connectedDebugAndroidTest --stacktrace --no-daemon
+          script: |
+            adb wait-for-device
+            for attempt in {1..60}; do
+              if adb shell service check package | grep -q "found"; then
+                break
+              fi
+              sleep 2
+            done
+            adb shell service check package | grep -q "found"
+            ./android/gradlew -p android :snap-cut-media:connectedDebugAndroidTest --stacktrace --no-daemon

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "dependencies": [
+    {
+      "name": "libFLAC",
+      "version": "1.5.0",
+      "sourceUrl": "https://downloads.xiph.org/releases/flac/flac-1.5.0.tar.xz",
+      "archiveBytes": 1078872,
+      "sha256": "f2c1c76592a82ffff8413ba3c4a1299b6c7ab06c734dee03fd88630485c2b920",
+      "vendoredFileCount": 847,
+      "vendoredTreeSha256": "ec1a3a6010d728e7f901ddc5e33242790a5d7189cfe4720a46b813096678ca99",
+      "license": "BSD-3-Clause (Xiph.org)",
+      "vendoredPath": "flac-1.5.0",
+      "selection": "Official source tree; library target only. Programs, examples, tests, docs, C++ bindings, Ogg, and install targets are disabled."
+    },
+    {
+      "name": "LAME",
+      "version": "4.0",
+      "sourceUrl": "https://sourceforge.net/projects/lame/files/lame/4.0/lame-4.0.tar.gz/download",
+      "archiveBytes": 1496810,
+      "sha256": "3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb",
+      "vendoredFileCount": 47,
+      "vendoredTreeSha256": "b6709a4b95c98afadf7e5517fc4f06127c741cbe40d0b072169020777879df7c",
+      "license": "LGPL-2.0-or-later",
+      "vendoredPath": "lame-4.0",
+      "selection": "Encoder library sources and required public/internal headers only, including the upstream vector declaration header required by portable fft.c. MPGLIB/mpg123, mpglib_interface.c, frontend/CLI, NASM, and vector implementation sources are not vendored or built."
+    },
+    {
+      "name": "libsamplerate",
+      "version": "0.2.2",
+      "sourceUrl": "https://github.com/libsndfile/libsamplerate/releases/download/0.2.2/libsamplerate-0.2.2.tar.xz",
+      "archiveBytes": 3319468,
+      "sha256": "3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893",
+      "vendoredFileCount": 108,
+      "vendoredTreeSha256": "2ab2c826090b3e9edb7a644d82676a6e2a0522495146859b398a709dc4e27386",
+      "license": "BSD-2-Clause",
+      "vendoredPath": "libsamplerate-0.2.2",
+      "selection": "Official source tree; library target only. Examples, tests, docs installation, and package installation are disabled."
+    }
+  ]
+}

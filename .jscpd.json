@@ -1,0 +1,9 @@
+{
+  "minTokens": 50,
+  "minLines": 10,
+  "mode": "strict",
+  "reporters": ["console", "html"],
+  "output": "copypaste",
+  "ignore": ["**/third_party/**", "**/build/**"],
+  "threshold": 3
+}

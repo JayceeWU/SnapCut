@@ -6,6 +6,7 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.snapcutmedia.codec.NativeCodecBridge
 import expo.modules.snapcutmedia.errors.SnapCutMediaError
+import expo.modules.snapcutmedia.errors.SnapCutMediaException
 import expo.modules.snapcutmedia.errors.mediaError
 import expo.modules.snapcutmedia.exportmedia.ExportProgress
 import expo.modules.snapcutmedia.exportmedia.SnapCutExportServices
@@ -25,13 +26,14 @@ import expo.modules.snapcutmedia.models.PickedSource
 import expo.modules.snapcutmedia.models.PreviewCommandRequest
 import expo.modules.snapcutmedia.models.SeekPreviewRequest
 import expo.modules.snapcutmedia.models.ShareExportRequest
-import expo.modules.snapcutmedia.models.SourceInspection
+import expo.modules.snapcutmedia.models.toBridgeMap
 import expo.modules.snapcutmedia.models.VerifyPrivateMediaRequest
 import expo.modules.snapcutmedia.preview.PreviewController
 import expo.modules.snapcutmedia.preview.PreviewEventSink
 import expo.modules.snapcutmedia.source.CancellationCheck
 import expo.modules.snapcutmedia.source.MediaResourceHooks
 import expo.modules.snapcutmedia.source.SourceInspector
+import expo.modules.snapcutmedia.source.SourceInspectionStage
 import expo.modules.snapcutmedia.source.SourcePicker
 import expo.modules.snapcutmedia.storage.PrivateMediaVerifier
 import expo.modules.snapcutmedia.waveform.WaveformProgress
@@ -44,6 +46,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 @Suppress("unused")
 class SnapCutMediaModule : Module() {
@@ -107,28 +110,48 @@ class SnapCutMediaModule : Module() {
     }
 
     AsyncFunction("inspectSource") Coroutine { request: InspectSourceRequest ->
-      withJob<SourceInspection>(
-        NativeOperation.IMPORT,
-        request.jobId,
-        request.generation
-      ) {
-        val coroutineJob = currentCoroutineContext().job
-        val cancellation = cancellationCheck(
+      val stage = AtomicReference(SourceInspectionStage.SIZE_PROBE)
+      try {
+        withJob<Map<String, Any?>>(
           NativeOperation.IMPORT,
           request.jobId,
-          request.generation,
-          coroutineJob,
-          SnapCutMediaError.IMPORT_CANCELLED
-        )
-        val hooks = resourceHooks(NativeOperation.IMPORT, request.jobId, request.generation)
-        withContext(Dispatchers.IO) {
-          inspector().inspect(
-            request.sourceUri,
-            request.maxSourceBytes,
-            cancellation,
-            hooks
+          request.generation
+        ) {
+          val coroutineJob = currentCoroutineContext().job
+          val cancellation = cancellationCheck(
+            NativeOperation.IMPORT,
+            request.jobId,
+            request.generation,
+            coroutineJob,
+            SnapCutMediaError.IMPORT_CANCELLED
           )
+          val hooks = resourceHooks(NativeOperation.IMPORT, request.jobId, request.generation)
+          val inspection = withContext(Dispatchers.IO) {
+            inspector().inspect(
+              request.sourceUri,
+              request.maxSourceBytes,
+              cancellation,
+              hooks,
+              onStage = stage::set
+            )
+          }
+          stage.set(SourceInspectionStage.BRIDGE_RESULT)
+          inspection.toBridgeMap()
         }
+      } catch (error: SnapCutMediaException) {
+        emitInspectError(request, error.error, stage.get(), categoryFor(error.error))
+        throw error
+      } catch (_: LinkageError) {
+        emitInspectError(
+          request,
+          SnapCutMediaError.NATIVE_FEATURE_UNAVAILABLE,
+          stage.get(),
+          "linkage"
+        )
+        throw mediaError(SnapCutMediaError.NATIVE_FEATURE_UNAVAILABLE)
+      } catch (_: Exception) {
+        emitInspectError(request, SnapCutMediaError.UNKNOWN_NATIVE_ERROR, stage.get(), "native")
+        throw mediaError(SnapCutMediaError.UNKNOWN_NATIVE_ERROR)
       }
     }
 
@@ -365,7 +388,8 @@ class SnapCutMediaModule : Module() {
 
   private fun inspector(): SourceInspector = sourceInspector ?: SourceInspector(
     context().contentResolver,
-    File(context().cacheDir, "SnapCut/source-spool")
+    File(context().cacheDir, "SnapCut/source-spool"),
+    context()
   ).also { sourceInspector = it }
 
   private fun mediaImporter(): MediaImportService = importService ?: MediaImportService(
@@ -433,6 +457,45 @@ class SnapCutMediaModule : Module() {
       progress.stage.value,
       progress.fraction
     )
+  }
+
+  private fun emitInspectError(
+    request: InspectSourceRequest,
+    error: SnapCutMediaError,
+    stage: SourceInspectionStage,
+    causeCategory: String
+  ) {
+    sendEvent(
+      "onNativeError",
+      mapOf(
+        "jobId" to request.jobId,
+        "operation" to NativeOperation.IMPORT.value,
+        "sequence" to 1L,
+        "stage" to stage.value,
+        "generation" to request.generation,
+        "code" to error.code,
+        "message" to error.safeMessage,
+        "nativeStage" to stage.value,
+        "causeCategory" to causeCategory
+      )
+    )
+  }
+
+  private fun categoryFor(error: SnapCutMediaError): String = when (error) {
+    SnapCutMediaError.SOURCE_NOT_FOUND,
+    SnapCutMediaError.SOURCE_PERMISSION_DENIED,
+    SnapCutMediaError.SOURCE_UNREADABLE,
+    SnapCutMediaError.SOURCE_TOO_LARGE -> "provider"
+    SnapCutMediaError.NO_AUDIO_TRACK,
+    SnapCutMediaError.M4S_INIT_MISSING,
+    SnapCutMediaError.DRM_UNSUPPORTED,
+    SnapCutMediaError.CORRUPT_MEDIA -> "extractor"
+    SnapCutMediaError.UNSUPPORTED_MEDIA,
+    SnapCutMediaError.UNSUPPORTED_AUDIO_CODEC,
+    SnapCutMediaError.UNSUPPORTED_CHANNEL_COUNT -> "decoder"
+    SnapCutMediaError.IMPORT_CANCELLED,
+    SnapCutMediaError.JOB_ALREADY_RUNNING -> "job"
+    else -> "native"
   }
 
   private fun emitWaveformProgress(request: GenerateWaveformRequest, progress: WaveformProgress) {

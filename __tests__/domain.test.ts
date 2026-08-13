@@ -10,7 +10,9 @@ import {
   chooseOutputChannelCount,
   chooseOutputSampleRateHz,
   compositionDurationMs,
+  completeProjectNamePrompt,
   createDefaultExportBaseName,
+  createDefaultProjectName,
   createProject,
   defaultSelectionForSource,
   deleteClip,
@@ -19,6 +21,7 @@ import {
   mapCompositionPosition,
   m4aExportPlanSchema,
   migrateProjectV1ToV2,
+  migrateProjectV2ToV3,
   moveClipEarlier,
   moveClipLater,
   normalizeProjectName,
@@ -28,11 +31,18 @@ import {
   snapCutExportRecordSchema,
   snapCutProjectSchema,
   snapCutSourceSchema,
+  shouldPromptForProjectName,
   sourceFileSchema,
   updateClip,
   validateExportBaseName,
 } from '@/domain';
-import type { SnapCutClip, SnapCutProject, SnapCutProjectV1, SnapCutSource } from '@/domain';
+import type {
+  SnapCutClip,
+  SnapCutProject,
+  SnapCutProjectV1,
+  SnapCutProjectV2,
+  SnapCutSource,
+} from '@/domain';
 import { formatExactTime, parseExactTime } from '@/utils';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
@@ -89,7 +99,7 @@ function makeProject(): SnapCutProject {
 }
 
 describe('strict persisted schemas and migration', () => {
-  test('parses a valid schema v2 project and rejects unknown persisted fields', () => {
+  test('parses a valid schema v3 project and rejects unknown persisted fields', () => {
     const project = makeProject();
     expect(snapCutProjectSchema.parse(project)).toEqual(project);
     expect(() =>
@@ -137,7 +147,7 @@ describe('strict persisted schemas and migration', () => {
     ).toThrow('Non-AAC sources');
   });
 
-  test('migrates schema v1 once and initializes newly introduced AAC metadata to null', () => {
+  test('migrates schema v1 through v3 and preserves legacy content', () => {
     const source = makeSource();
     const {
       aacProfile: _aacProfile,
@@ -169,7 +179,24 @@ describe('strict persisted schemas and migration', () => {
       encoderPaddingFrames: null,
       privateAudioSha256: null,
     });
-    expect(parseSnapCutProject(v1)).toEqual(migrated);
+    expect(parseSnapCutProject(v1)).toEqual({
+      ...migrated,
+      schemaVersion: 3,
+      namePromptCompleted: true,
+    });
+  });
+
+  test('migrates schema v2 to v3 without prompting existing projects', () => {
+    const current = makeProject();
+    const { namePromptCompleted: _completed, ...rest } = current;
+    const v2 = { ...rest, schemaVersion: 2 } as SnapCutProjectV2;
+
+    expect(migrateProjectV2ToV3(v2)).toEqual({
+      ...v2,
+      schemaVersion: 3,
+      namePromptCompleted: true,
+    });
+    expect(parseSnapCutProject(v2)).toEqual(migrateProjectV2ToV3(v2));
   });
 
   test('rejects invalid relations, fractional milliseconds, future schemas, and 99 ms clips', () => {
@@ -192,7 +219,7 @@ describe('strict persisted schemas and migration', () => {
         clips: [makeClip({ sourceId: SOURCE_B_ID })],
       }),
     ).toThrow();
-    expect(() => parseSnapCutProject({ ...project, schemaVersion: 3 })).toThrow();
+    expect(() => parseSnapCutProject({ ...project, schemaVersion: 4 })).toThrow();
   });
 
   test('enforces truthful export record fields', () => {
@@ -277,11 +304,46 @@ describe('strict persisted schemas and migration', () => {
 });
 
 describe('project and clip operations', () => {
+  test('creates local timestamp project names and rejects invalid dates', () => {
+    const localDate = new Date(2026, 7, 13, 14, 30, 25);
+    expect(createDefaultProjectName(localDate)).toBe('2026-08-13 14-30-25');
+    expect(createProject({ id: PROJECT_ID, now: localDate })).toMatchObject({
+      name: '2026-08-13 14-30-25',
+      namePromptCompleted: false,
+    });
+    expect(createProject({ id: PROJECT_ID, name: 'Named', now: localDate })).toMatchObject({
+      name: 'Named',
+      namePromptCompleted: true,
+    });
+    expect(() => createDefaultProjectName(new Date(Number.NaN))).toThrow(DomainError);
+  });
+
+  test('prompts only after the first clip and can complete the prompt without renaming', () => {
+    const automatic = createProject({ id: PROJECT_ID, now: CREATED_AT });
+    expect(shouldPromptForProjectName(automatic)).toBe(false);
+
+    const withFirstClip = addSource(automatic, makeSource());
+    const saved = addClip(withFirstClip, makeClip());
+    expect(shouldPromptForProjectName(saved)).toBe(true);
+
+    const completed = completeProjectNamePrompt(saved, UPDATED_AT);
+    expect(completed).toMatchObject({
+      name: automatic.name,
+      namePromptCompleted: true,
+      updatedAt: UPDATED_AT,
+    });
+    expect(shouldPromptForProjectName(completed)).toBe(false);
+    expect(shouldPromptForProjectName(updateClip(completed, CLIP_A_ID, makeClip()))).toBe(false);
+  });
+
   test('normalizes a default name and validates names by Unicode code point', () => {
     expect(normalizeProjectName('   ')).toBe('Untitled Project');
     expect(normalizeProjectName(` ${'🎵'.repeat(80)} `)).toBe('🎵'.repeat(80));
     expect(() => normalizeProjectName('🎵'.repeat(81))).toThrow(DomainError);
     expect(() => renameProject(makeProject(), '   ')).toThrow(DomainError);
+    expect(
+      renameProject(createProject({ id: PROJECT_ID, now: CREATED_AT }), 'Manual'),
+    ).toMatchObject({ name: 'Manual', namePromptCompleted: true });
   });
 
   test('adds, edits, duplicates, moves, and deletes clips without mutating snapshots', () => {

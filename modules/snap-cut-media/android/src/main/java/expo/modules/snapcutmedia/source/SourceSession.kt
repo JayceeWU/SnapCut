@@ -1,6 +1,7 @@
 package expo.modules.snapcutmedia.source
 
 import android.content.ContentResolver
+import android.content.Context
 import android.media.MediaExtractor
 import android.net.Uri
 import android.os.CancellationSignal
@@ -147,6 +148,7 @@ internal class SourceSession private constructor(
   val requiresStreamingSizeVerification: Boolean,
   val containerProbe: ContainerProbe,
   private val resolver: ContentResolver,
+  private val context: Context?,
   private val spoolFile: File?,
   private val hooks: MediaResourceHooks,
   private val cancellation: CancellationCheck
@@ -163,6 +165,30 @@ internal class SourceSession private constructor(
 
   fun openExtractor(): ManagedExtractor {
     check(!closed.get()) { "SourceSession is closed" }
+    if (spoolFile == null && context != null) {
+      val directExtractor = MediaExtractor()
+      val directCancellation = CancellationSignal()
+      val direct = try {
+        ManagedExtractor(directExtractor, hooks, directCancellation::cancel)
+      } catch (error: Exception) {
+        cancellation.throwIfCancelled()
+        throw mapOpenError(error)
+      }
+      try {
+        directExtractor.setDataSource(context, sourceUri, null)
+        return direct
+      } catch (error: SecurityException) {
+        direct.close()
+        cancellation.throwIfCancelled()
+        throw mapOpenError(error)
+      } catch (_: Exception) {
+        // Some API 29 DocumentsProviders cannot satisfy the Context/Uri path
+        // even though their descriptor is readable. Retry once through the
+        // owned PFD path without copying the provider source.
+        direct.close()
+        cancellation.throwIfCancelled()
+      }
+    }
     val extractor = MediaExtractor()
     val openCancellation = CancellationSignal()
     val managed = try {
@@ -202,11 +228,14 @@ internal class SourceSession private constructor(
       maxSourceBytes: Long,
       spoolRoot: File,
       cancellation: CancellationCheck = CancellationCheck.NONE,
-      hooks: MediaResourceHooks = MediaResourceHooks.NONE
+      hooks: MediaResourceHooks = MediaResourceHooks.NONE,
+      onStage: (SourceInspectionStage) -> Unit = {},
+      context: Context? = null
     ): SourceSession {
       val uri = parseSourceUri(sourceUriString)
       val limit = SourceSizePolicy.effectiveLimit(maxSourceBytes)
       try {
+        onStage(SourceInspectionStage.SIZE_PROBE)
         val reported = collectReportedSizes(resolver, uri)
         // A contradictory provider report is advisory. The bounded stream is
         // authoritative even when one of the three reported values is above
@@ -218,6 +247,7 @@ internal class SourceSession private constructor(
         var spool: File? = null
         val actualSize = when {
           !seekable -> {
+            onStage(SourceInspectionStage.STREAM_VERIFICATION)
             val expectedSpoolBytes = if (reported.requiresStreamingVerification) {
               limit
             } else {
@@ -236,12 +266,11 @@ internal class SourceSession private constructor(
               throw error
             }
           }
-          reported.requiresStreamingVerification -> openManagedInputStream(
-            resolver,
-            uri,
-            hooks
-          ).use { input ->
-            BoundedSourceIo.copy(input, null, limit, cancellation).bytesCopied
+          reported.requiresStreamingVerification -> {
+            onStage(SourceInspectionStage.STREAM_VERIFICATION)
+            openManagedInputStream(resolver, uri, hooks).use { input ->
+              BoundedSourceIo.copy(input, null, limit, cancellation).bytesCopied
+            }
           }
           else -> reported.reportedSizeBytes
         }
@@ -249,6 +278,7 @@ internal class SourceSession private constructor(
           runCatching { spool?.delete() }
           throw mediaError(SnapCutMediaError.CORRUPT_MEDIA)
         }
+        onStage(SourceInspectionStage.CONTAINER_PROBE)
         val probe = (spool?.let { ManagedInputStream(FileInputStream(it), hooks) }
           ?: openManagedInputStream(resolver, uri, hooks)).use { input ->
           ContainerProbe.read(input)
@@ -259,6 +289,7 @@ internal class SourceSession private constructor(
           requiresStreamingSizeVerification = reported.requiresStreamingVerification,
           containerProbe = probe,
           resolver = resolver,
+          context = context,
           spoolFile = spool,
           hooks = hooks,
           cancellation = cancellation

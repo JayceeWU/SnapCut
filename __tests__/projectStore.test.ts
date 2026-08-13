@@ -7,7 +7,8 @@ import {
 } from '@/stores';
 
 const createFixture = (id: string, name: string, updatedAt: string): SnapCutProject => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
+  namePromptCompleted: true,
   id,
   name,
   createdAt: updatedAt,
@@ -29,8 +30,13 @@ function createFakeRepository(seed: SnapCutProject[] = []): ProjectRepositoryPor
       projects.set(project.id, project);
       return project;
     }),
-    create: jest.fn(({ name }: { name: string }) => {
-      const project = createFixture(`project-${nextId++}`, name, '2026-08-12T20:00:00.000Z');
+    create: jest.fn((options: { name?: string | null } = {}) => {
+      const project = createFixture(
+        `project-${nextId++}`,
+        options.name ?? '2026-08-12 13-00-00',
+        '2026-08-12T20:00:00.000Z',
+      );
+      project.namePromptCompleted = options.name !== undefined;
       projects.set(project.id, project);
       return project;
     }),
@@ -78,6 +84,19 @@ describe('project store repository coordination', () => {
 
     expect(await useProjectStore.getState().deleteProject(project!.id)).toBe(true);
     expect(useProjectStore.getState().projects).toHaveLength(0);
+  });
+
+  it('creates an automatically named project without passing a name', async () => {
+    const repository = createFakeRepository();
+    configureProjectRepository(repository);
+
+    const project = await useProjectStore.getState().createProject();
+
+    expect(repository.create).toHaveBeenCalledWith({});
+    expect(project).toMatchObject({
+      name: '2026-08-12 13-00-00',
+      namePromptCompleted: false,
+    });
   });
 
   it('maps repository failures to stable user copy and releases mutation state', async () => {

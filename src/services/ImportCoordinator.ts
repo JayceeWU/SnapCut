@@ -3,7 +3,8 @@ import { z } from 'zod';
 
 import { snapCutSourceSchema } from '@/domain/schemas';
 import type { SnapCutProject, SnapCutSource, SourceKind } from '@/domain/types';
-import type { ProgressEvent } from '@/native/SnapCutMedia.events';
+import { SnapCutMediaContractError } from '@/native/SnapCutMedia';
+import type { NativeErrorEvent, ProgressEvent } from '@/native/SnapCutMedia.events';
 import type {
   ImportResult,
   ImportSourceRequest,
@@ -87,6 +88,10 @@ export type ImportMediaPort = Pick<
     eventName: 'onImportProgress',
     listener: (event: ProgressEvent) => void,
   ): { remove(): void };
+  addEventListener(
+    eventName: 'onNativeError',
+    listener: (event: NativeErrorEvent) => void,
+  ): { remove(): void };
 };
 
 export interface ImportRepositoryPort {
@@ -104,6 +109,9 @@ export interface ImportDiagnostic {
   readonly generation: number;
   readonly stage: ImportProgressSnapshot['stage'];
   readonly code: ImportFailure['code'];
+  readonly nativeStage?: string;
+  readonly causeCategory?: NativeErrorEvent['causeCategory'];
+  readonly contractFields?: string;
 }
 
 export interface ImportCoordinatorOptions {
@@ -138,6 +146,8 @@ interface ActiveImport {
   cancelRequested: boolean;
   canCancel: boolean;
   cleanup: Promise<void> | null;
+  nativeStage?: string;
+  causeCategory?: NativeErrorEvent['causeCategory'];
 }
 
 class StaleImportOperationError extends Error {}
@@ -194,6 +204,7 @@ export class ImportCoordinator {
   private readonly maxSourceBytes: number;
   private readonly onDiagnostic: ((diagnostic: ImportDiagnostic) => void) | undefined;
   private readonly progressSubscription: { remove(): void };
+  private readonly errorSubscription: { remove(): void };
   private active: ActiveImport | null = null;
   private generation = 0;
   private lastImportedSourceId: string | null = null;
@@ -213,6 +224,9 @@ export class ImportCoordinator {
     this.onDiagnostic = options.onDiagnostic;
     this.progressSubscription = media.addEventListener('onImportProgress', (event) =>
       this.handleProgress(event),
+    );
+    this.errorSubscription = media.addEventListener('onNativeError', (event) =>
+      this.handleNativeError(event),
     );
   }
 
@@ -298,6 +312,7 @@ export class ImportCoordinator {
 
   dispose(): void {
     this.progressSubscription.remove();
+    this.errorSubscription.remove();
   }
 
   private async runImport(context: ActiveImport): Promise<ImportOutcome> {
@@ -429,6 +444,12 @@ export class ImportCoordinator {
         generation: context.generation,
         stage: failureStage,
         code: failure.code,
+        ...(context.nativeStage === undefined ? {} : { nativeStage: context.nativeStage }),
+        ...(context.causeCategory === undefined ? {} : { causeCategory: context.causeCategory }),
+        ...(terminalError instanceof SnapCutMediaContractError &&
+        terminalError.issuePaths.length > 0
+          ? { contractFields: terminalError.issuePaths.join(',') }
+          : {}),
       });
       return { status: 'failed', failure };
     } finally {
@@ -490,6 +511,20 @@ export class ImportCoordinator {
     context.stage = parsed.data.stage === 'complete' ? 'verifying' : parsed.data.stage;
     context.fraction = parsed.data.fraction;
     this.publish(context);
+  }
+
+  private handleNativeError(event: NativeErrorEvent): void {
+    const context = this.active;
+    if (
+      context === null ||
+      event.operation !== 'import' ||
+      event.jobId !== context.jobId ||
+      event.generation !== context.generation
+    ) {
+      return;
+    }
+    if (event.nativeStage !== undefined) context.nativeStage = event.nativeStage;
+    if (event.causeCategory !== undefined) context.causeCategory = event.causeCategory;
   }
 
   private assertCurrent(context: ActiveImport): void {

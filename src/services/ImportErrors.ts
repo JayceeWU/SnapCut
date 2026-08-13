@@ -1,4 +1,5 @@
 import type { SnapCutMediaErrorCode } from '@/native/SnapCutMedia.types';
+import { SnapCutMediaContractError } from '@/native/SnapCutMedia';
 
 export type ImportFailureCode = SnapCutMediaErrorCode | 'INVALID_NATIVE_RESULT';
 
@@ -117,6 +118,9 @@ export function importFailure(code: ImportFailureCode): ImportFailure {
 }
 
 export function mapImportError(error: unknown): ImportFailure {
+  if (error instanceof SnapCutMediaContractError) {
+    return importFailure('INVALID_NATIVE_RESULT');
+  }
   const candidate = candidateCode(error);
   const aliased = candidate === null ? undefined : LEGACY_CODE_ALIASES[candidate];
   if (aliased !== undefined) {

@@ -291,10 +291,20 @@ export const snapCutProjectV1Schema = z
   .strict()
   .superRefine(refineProjectRelations);
 
+export const snapCutProjectV2Schema = z
+  .object({
+    schemaVersion: z.literal(2),
+    ...projectCommonShape,
+    sources: z.array(snapCutSourceSchema),
+  })
+  .strict()
+  .superRefine(refineProjectRelations);
+
 export const snapCutProjectSchema = z
   .object({
     schemaVersion: z.literal(CURRENT_PROJECT_SCHEMA_VERSION),
     ...projectCommonShape,
+    namePromptCompleted: z.boolean(),
     sources: z.array(snapCutSourceSchema),
   })
   .strict()

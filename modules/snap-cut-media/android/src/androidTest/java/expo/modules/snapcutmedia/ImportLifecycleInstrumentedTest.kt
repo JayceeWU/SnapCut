@@ -39,7 +39,7 @@ class ImportLifecycleInstrumentedTest {
     spoolRoot = freshFixtureDirectory(testContext, "import-lifecycle-spool")
     stagingRoot = freshFixtureDirectory(testContext, "import-lifecycle-staging")
     service = MediaImportService(
-      SourceInspector(testContext.contentResolver, spoolRoot),
+      SourceInspector(testContext.contentResolver, spoolRoot, testContext),
       listOf(stagingRoot)
     )
   }

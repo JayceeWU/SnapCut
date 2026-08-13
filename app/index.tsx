@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,8 +16,6 @@ import { colors, copy, layout, spacing, typography } from '@/constants';
 import type { SnapCutProject } from '@/domain/types';
 import { useProjectStore } from '@/stores';
 
-type NameDialog = { mode: 'create'; project: null } | { mode: 'rename'; project: SnapCutProject };
-
 export default function ProjectListScreen() {
   const projects = useProjectStore((state) => state.projects);
   const repairStatuses = useProjectStore((state) => state.repairStatuses);
@@ -32,9 +30,10 @@ export default function ProjectListScreen() {
   const deleteProject = useProjectStore((state) => state.deleteProject);
   const deleteCorruptProject = useProjectStore((state) => state.deleteCorruptProject);
   const clearError = useProjectStore((state) => state.clearError);
-  const [nameDialog, setNameDialog] = useState<NameDialog | null>(null);
+  const [renameTarget, setRenameTarget] = useState<SnapCutProject | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SnapCutProject | null>(null);
   const [deleteCorruptTarget, setDeleteCorruptTarget] = useState<string | null>(null);
+  const creatingRef = useRef(false);
 
   useEffect(() => {
     if (!initialized) {
@@ -46,20 +45,21 @@ export default function ProjectListScreen() {
     router.push({ pathname: '/project/[id]', params: { id: projectId } });
   };
 
-  const submitName = async (name: string) => {
-    if (!nameDialog) return;
-
-    if (nameDialog.mode === 'create') {
-      const project = await createProject(name);
-      if (project) {
-        setNameDialog(null);
-        openProject(project.id);
-      }
-      return;
+  const createNewProject = async () => {
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    try {
+      const project = await createProject();
+      if (project) openProject(project.id);
+    } finally {
+      creatingRef.current = false;
     }
+  };
 
-    const renamed = await renameProject(nameDialog.project.id, name);
-    if (renamed) setNameDialog(null);
+  const submitRename = async (name: string) => {
+    if (!renameTarget) return;
+    const renamed = await renameProject(renameTarget.id, name);
+    if (renamed) setRenameTarget(null);
   };
 
   const confirmDelete = async () => {
@@ -87,8 +87,7 @@ export default function ProjectListScreen() {
           <View>
             <View style={styles.header}>
               <View style={styles.titleColumn}>
-                <Text style={styles.eyebrow}>{copy.projects.eyebrow}</Text>
-                <Text accessibilityRole="header" style={styles.title}>
+                <Text accessibilityRole="header" numberOfLines={1} style={styles.title}>
                   {copy.appName}
                 </Text>
               </View>
@@ -101,8 +100,10 @@ export default function ProjectListScreen() {
                   />
                 ) : null}
                 <AppButton
+                  disabled={mutation === 'create'}
                   label={copy.projects.newAction}
-                  onPress={() => setNameDialog({ mode: 'create', project: null })}
+                  loading={mutation === 'create'}
+                  onPress={() => void createNewProject()}
                 />
               </View>
             </View>
@@ -123,9 +124,11 @@ export default function ProjectListScreen() {
             </View>
           ) : corruptProjectIds.length === 0 ? (
             <EmptyState
+              actionDisabled={mutation === 'create'}
               actionLabel={copy.projects.newAction}
+              actionLoading={mutation === 'create'}
               message={copy.projects.emptyMessage}
-              onAction={() => setNameDialog({ mode: 'create', project: null })}
+              onAction={() => void createNewProject()}
               testID="empty-project-list"
               title={copy.projects.emptyTitle}
             />
@@ -146,19 +149,18 @@ export default function ProjectListScreen() {
           <ProjectCard
             onDelete={() => setDeleteTarget(item)}
             onOpen={() => openProject(item.id)}
-            onRename={() => setNameDialog({ mode: 'rename', project: item })}
+            onRename={() => setRenameTarget(item)}
             project={item}
             repairStatus={repairStatuses[item.id]}
           />
         )}
       />
       <ProjectNameModal
-        busy={mutation === 'create' || mutation === 'rename'}
-        initialName={nameDialog?.project?.name}
-        mode={nameDialog?.mode ?? 'create'}
-        onCancel={() => setNameDialog(null)}
-        onSubmit={(name) => void submitName(name)}
-        visible={nameDialog !== null}
+        busy={mutation === 'rename'}
+        initialName={renameTarget?.name}
+        onCancel={() => setRenameTarget(null)}
+        onSubmit={(name) => void submitRename(name)}
+        visible={renameTarget !== null}
       />
       <ConfirmDeleteModal
         busy={mutation === 'delete'}
@@ -187,25 +189,22 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: spacing.md,
     marginBottom: spacing.lg,
   },
   titleColumn: {
+    minWidth: 150,
     flexShrink: 1,
   },
   headerActions: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexWrap: 'nowrap',
+    flexShrink: 0,
     justifyContent: 'flex-end',
     gap: spacing.xs,
-  },
-  eyebrow: {
-    ...typography.caption,
-    color: colors.focus,
-    fontWeight: '700',
-    letterSpacing: 1.3,
   },
   title: {
     ...typography.appTitle,

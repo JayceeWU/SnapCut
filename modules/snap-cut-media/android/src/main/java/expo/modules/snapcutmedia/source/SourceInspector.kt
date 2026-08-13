@@ -1,6 +1,7 @@
 package expo.modules.snapcutmedia.source
 
 import android.content.ContentResolver
+import android.content.Context
 import android.media.MediaExtractor
 import expo.modules.snapcutmedia.errors.SnapCutMediaError
 import expo.modules.snapcutmedia.errors.SnapCutMediaException
@@ -13,46 +14,71 @@ internal data class InspectedSource(
   val selectedTrackIndex: Int
 )
 
+internal enum class SourceInspectionStage(val value: String) {
+  SIZE_PROBE("size_probe"),
+  STREAM_VERIFICATION("stream_verification"),
+  CONTAINER_PROBE("container_probe"),
+  EXTRACTOR_OPEN("extractor_open"),
+  TRACK_SCAN("track_scan"),
+  DECODER_CHECK("decoder_check"),
+  BRIDGE_RESULT("bridge_result")
+}
+
 internal class SourceInspector(
   private val resolver: ContentResolver,
   private val spoolRoot: File,
+  private val context: Context? = null,
   private val decoderAvailability: DecoderAvailability = PlatformDecoderAvailability
 ) {
   fun inspect(
     sourceUri: String,
     maxSourceBytes: Long,
     cancellation: CancellationCheck = CancellationCheck.NONE,
-    hooks: MediaResourceHooks = MediaResourceHooks.NONE
-  ): SourceInspection = openSession(sourceUri, maxSourceBytes, cancellation, hooks).use { session ->
-    inspectSession(session, cancellation).inspection
+    hooks: MediaResourceHooks = MediaResourceHooks.NONE,
+    onStage: (SourceInspectionStage) -> Unit = {}
+  ): SourceInspection = openSession(
+    sourceUri,
+    maxSourceBytes,
+    cancellation,
+    hooks,
+    onStage
+  ).use { session ->
+    inspectSession(session, cancellation, onStage).inspection
   }
 
   fun openSession(
     sourceUri: String,
     maxSourceBytes: Long,
     cancellation: CancellationCheck = CancellationCheck.NONE,
-    hooks: MediaResourceHooks = MediaResourceHooks.NONE
+    hooks: MediaResourceHooks = MediaResourceHooks.NONE,
+    onStage: (SourceInspectionStage) -> Unit = {}
   ): SourceSession = SourceSession.open(
-    resolver,
-    sourceUri,
-    maxSourceBytes,
-    spoolRoot,
-    cancellation,
-    hooks
+    resolver = resolver,
+    sourceUriString = sourceUri,
+    maxSourceBytes = maxSourceBytes,
+    spoolRoot = spoolRoot,
+    cancellation = cancellation,
+    hooks = hooks,
+    onStage = onStage,
+    context = context
   )
 
   fun inspectSession(
     session: SourceSession,
-    cancellation: CancellationCheck = CancellationCheck.NONE
+    cancellation: CancellationCheck = CancellationCheck.NONE,
+    onStage: (SourceInspectionStage) -> Unit = {}
   ): InspectedSource {
     cancellation.throwIfCancelled()
     try {
+      onStage(SourceInspectionStage.EXTRACTOR_OPEN)
       session.openExtractor().use { managed ->
         val extractor = managed.extractor
+        onStage(SourceInspectionStage.TRACK_SCAN)
         val (candidates, hasVideo) = AudioTrackPolicy.collect(
           extractor,
           session.containerProbe,
-          decoderAvailability
+          decoderAvailability,
+          onDecoderCheck = { onStage(SourceInspectionStage.DECODER_CHECK) }
         )
         val selected = AudioTrackPolicy.select(
           candidates,

@@ -31,10 +31,12 @@ import {
 } from '@/constants';
 import {
   addClip,
+  completeProjectNamePrompt,
   deleteClip,
   duplicateClip,
   moveClipEarlier,
   moveClipLater,
+  shouldPromptForProjectName,
   updateClip,
   type SnapCutClip,
   type SnapCutSource,
@@ -127,7 +129,7 @@ export default function ProjectEditorScreen() {
   const clearPlaybackError = usePlaybackStore((state) => state.clearError);
 
   const [showActions, setShowActions] = useState(false);
-  const [showRename, setShowRename] = useState(false);
+  const [renameReason, setRenameReason] = useState<'manual' | 'first-clip' | null>(null);
   const [showDelete, setShowDelete] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -201,9 +203,20 @@ export default function ProjectEditorScreen() {
     selectionEndMs <= selectedSource.durationMs &&
     selectionEndMs - selectionStartMs >= 100;
   const saving = mutation === 'save';
+  const activeRenameReason =
+    renameReason ?? (shouldPromptForProjectName(project) ? 'first-clip' : null);
 
   const submitRename = async (name: string) => {
-    if (await renameProject(project.id, name)) setShowRename(false);
+    if (await renameProject(project.id, name)) setRenameReason(null);
+  };
+
+  const cancelRename = async () => {
+    if (activeRenameReason !== 'first-clip') {
+      setRenameReason(null);
+      return;
+    }
+    const saved = await updateProject(project.id, completeProjectNamePrompt);
+    if (saved) setRenameReason(null);
   };
 
   const confirmDelete = async () => {
@@ -351,7 +364,7 @@ export default function ProjectEditorScreen() {
               label={copy.editor.renameAction}
               onPress={() => {
                 setShowActions(false);
-                setShowRename(true);
+                setRenameReason('manual');
               }}
               variant="ghost"
             />
@@ -555,12 +568,11 @@ export default function ProjectEditorScreen() {
       </ScrollView>
 
       <ProjectNameModal
-        busy={mutation === 'rename'}
+        busy={mutation === 'rename' || (activeRenameReason === 'first-clip' && mutation === 'save')}
         initialName={project.name}
-        mode="rename"
-        onCancel={() => setShowRename(false)}
+        onCancel={() => void cancelRename()}
         onSubmit={(name) => void submitRename(name)}
-        visible={showRename}
+        visible={activeRenameReason !== null}
       />
       <ConfirmDeleteModal
         busy={mutation === 'delete'}

@@ -1,7 +1,6 @@
 export const copy = {
   appName: 'SnapCut',
   projects: {
-    eyebrow: 'OFFLINE AUDIO EDITOR',
     newAction: 'New Project',
     diagnosticsAction: 'Diagnostics',
     emptyTitle: 'No projects yet',
@@ -43,9 +42,7 @@ export const copy = {
     corruptDeleteHint: 'Deletes only this damaged project directory from SnapCut',
   },
   nameDialog: {
-    createTitle: 'New Project',
     renameTitle: 'Rename Project',
-    createAction: 'Create',
     saveAction: 'Save',
     cancelAction: 'Cancel',
     fieldLabel: 'Project name',

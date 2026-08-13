@@ -16,7 +16,6 @@ import { AppButton } from './AppButton';
 
 interface ProjectNameModalProps {
   visible: boolean;
-  mode: 'create' | 'rename';
   initialName?: string | undefined;
   busy?: boolean;
   onCancel: () => void;
@@ -27,7 +26,6 @@ const maximumNameLength = 80;
 
 export function ProjectNameModal({
   visible,
-  mode,
   initialName = '',
   busy = false,
   onCancel,
@@ -54,9 +52,6 @@ export function ProjectNameModal({
     onSubmit(normalizedName);
   };
 
-  const title = mode === 'create' ? copy.nameDialog.createTitle : copy.nameDialog.renameTitle;
-  const submitLabel = mode === 'create' ? copy.nameDialog.createAction : copy.nameDialog.saveAction;
-
   return (
     <Modal
       animationType="fade"
@@ -78,7 +73,7 @@ export function ProjectNameModal({
         />
         <View accessibilityViewIsModal style={styles.dialog}>
           <Text accessibilityRole="header" style={styles.title}>
-            {title}
+            {copy.nameDialog.renameTitle}
           </Text>
           <Text style={styles.label}>{copy.nameDialog.fieldLabel}</Text>
           <TextInput
@@ -115,7 +110,7 @@ export function ProjectNameModal({
               />
             </View>
             <View style={styles.actionItem}>
-              <AppButton loading={busy} label={submitLabel} onPress={submit} />
+              <AppButton loading={busy} label={copy.nameDialog.saveAction} onPress={submit} />
             </View>
           </View>
         </View>

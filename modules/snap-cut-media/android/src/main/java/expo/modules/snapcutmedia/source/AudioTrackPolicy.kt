@@ -54,7 +54,8 @@ internal object AudioTrackPolicy {
   fun collect(
     extractor: MediaExtractor,
     probe: ContainerProbe,
-    decoderAvailability: DecoderAvailability = PlatformDecoderAvailability
+    decoderAvailability: DecoderAvailability = PlatformDecoderAvailability,
+    onDecoderCheck: () -> Unit = {}
   ): Pair<List<AudioTrackCandidate>, Boolean> {
     val candidates = mutableListOf<AudioTrackCandidate>()
     var hasVideo = false
@@ -72,6 +73,7 @@ internal object AudioTrackPolicy {
       val aacObjectType = if (mime == MIME_AAC) AacCodecData.objectType(format) else null
       val aacProfile = aacObjectType?.let(AacCodecData::profile)
       val pcmBits = if (mime in PCM_MIMES || mime in FLAC_MIMES) pcmBits(format) else null
+      onDecoderCheck()
       candidates += AudioTrackCandidate(
         index = index,
         format = format,

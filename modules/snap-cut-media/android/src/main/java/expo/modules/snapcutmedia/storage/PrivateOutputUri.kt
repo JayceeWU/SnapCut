@@ -6,6 +6,7 @@ import java.io.File
 import java.io.IOException
 import java.net.URI
 import java.net.URISyntaxException
+import java.nio.file.Files
 
 internal object PrivateOutputUri {
   fun requireSafeStagingUri(
@@ -53,10 +54,14 @@ internal object PrivateOutputUri {
     val rawCandidate = fileFromUri(uri, path)
     val candidate = canonical(rawCandidate)
     val isPrivateChild = stagingRoots.any { root ->
+      val rawRoot = root.absoluteFile.toPath().normalize()
+      val rawPath = rawCandidate.absoluteFile.toPath().normalize()
       val canonicalRoot = canonical(root)
-      candidate.path != canonicalRoot.path &&
+      rawPath != rawRoot &&
+        rawPath.startsWith(rawRoot) &&
+        candidate.path != canonicalRoot.path &&
         candidate.path.startsWith(canonicalRoot.path.withTrailingSeparator()) &&
-        hasNoSymbolicLinkEscape(rawCandidate, canonicalRoot)
+        hasNoSymbolicLinkInsideRoot(rawPath.toFile(), rawRoot.toFile())
     }
     if (!isPrivateChild) {
       throw mediaError(SnapCutMediaError.PATH_OUTSIDE_PRIVATE_STORAGE)
@@ -106,22 +111,18 @@ internal object PrivateOutputUri {
     throw mediaError(error, cause = cause)
   }
 
-  private fun hasNoSymbolicLinkEscape(candidate: File, canonicalRoot: File): Boolean {
-    var current: File? = candidate.absoluteFile.parentFile
-    while (current != null) {
-      val canonicalCurrent = canonical(current)
-      if (
-        current.exists() &&
-        current.toPath().toAbsolutePath().normalize() != canonicalCurrent.toPath().toAbsolutePath().normalize()
-      ) {
-        return false
-      }
-      if (canonicalCurrent.path == canonicalRoot.path) {
-        return true
-      }
-      current = current.parentFile
+  private fun hasNoSymbolicLinkInsideRoot(candidate: File, rawRoot: File): Boolean {
+    val rootPath = rawRoot.toPath().toAbsolutePath().normalize()
+    val parentPath = candidate.absoluteFile.parentFile?.toPath()?.toAbsolutePath()?.normalize()
+      ?: return false
+    if (!parentPath.startsWith(rootPath) || Files.isSymbolicLink(rootPath)) return false
+
+    var current = rootPath
+    for (component in rootPath.relativize(parentPath)) {
+      current = current.resolve(component)
+      if (Files.isSymbolicLink(current)) return false
     }
-    return false
+    return true
   }
 
   private fun String.withTrailingSeparator(): String =

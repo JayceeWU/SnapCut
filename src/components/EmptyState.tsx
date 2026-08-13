@@ -9,6 +9,8 @@ interface EmptyStateProps {
   message: string;
   actionLabel?: string;
   onAction?: () => void;
+  actionDisabled?: boolean;
+  actionLoading?: boolean;
   compact?: boolean;
   testID?: string;
 }
@@ -18,6 +20,8 @@ export function EmptyState({
   message,
   actionLabel,
   onAction,
+  actionDisabled = false,
+  actionLoading = false,
   compact = false,
   testID,
 }: EmptyStateProps) {
@@ -32,7 +36,12 @@ export function EmptyState({
       <Text style={styles.message}>{message}</Text>
       {actionLabel && onAction ? (
         <View style={styles.action}>
-          <AppButton label={actionLabel} onPress={onAction} />
+          <AppButton
+            disabled={actionDisabled}
+            label={actionLabel}
+            loading={actionLoading}
+            onPress={onAction}
+          />
         </View>
       ) : null}
     </View>

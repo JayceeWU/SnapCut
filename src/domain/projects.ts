@@ -1,6 +1,6 @@
 import { DEFAULT_SELECTION_DURATION_MS } from './constants';
 import { DomainError } from './errors';
-import { normalizeProjectName } from './naming';
+import { createDefaultProjectName, normalizeProjectName } from './naming';
 import {
   isoDateTimeSchema,
   projectIndexFileV1Schema,
@@ -28,11 +28,14 @@ function timestamp(value: string | Date): string {
 }
 
 export function createProject(input: CreateProjectInput): SnapCutProject {
-  const now = timestamp(input.now);
+  const date = input.now instanceof Date ? input.now : new Date(input.now);
+  const now = timestamp(date);
+  const explicitName = input.name?.trim();
   return snapCutProjectSchema.parse({
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: input.id,
-    name: normalizeProjectName(input.name),
+    name: explicitName ? normalizeProjectName(explicitName) : createDefaultProjectName(date),
+    namePromptCompleted: Boolean(explicitName),
     createdAt: now,
     updatedAt: now,
     sources: [],
@@ -54,6 +57,23 @@ export function renameProject(
   return snapCutProjectSchema.parse({
     ...project,
     name: normalizeProjectName(normalizedName),
+    namePromptCompleted: true,
+    updatedAt,
+  }) as SnapCutProject;
+}
+
+export function shouldPromptForProjectName(project: SnapCutProject): boolean {
+  return !project.namePromptCompleted && project.clips.length > 0;
+}
+
+export function completeProjectNamePrompt(
+  projectInput: SnapCutProject,
+  updatedAt = projectInput.updatedAt,
+): SnapCutProject {
+  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+  return snapCutProjectSchema.parse({
+    ...project,
+    namePromptCompleted: true,
     updatedAt,
   }) as SnapCutProject;
 }

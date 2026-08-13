@@ -35,6 +35,8 @@ export interface PlaybackStatusEvent extends NativeJobEvent {
 export interface NativeErrorEvent extends NativeJobEvent {
   code: SnapCutMediaErrorCode;
   message: string;
+  nativeStage?: string;
+  causeCategory?: 'provider' | 'extractor' | 'decoder' | 'job' | 'linkage' | 'native';
   format?: SnapCutExportFormat;
 }
 

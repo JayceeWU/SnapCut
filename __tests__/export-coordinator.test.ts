@@ -23,7 +23,8 @@ function flushTasks(): Promise<void> {
 
 function project(): SnapCutProject {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    namePromptCompleted: true,
     id: PROJECT_ID,
     name: 'Purple rehearsal',
     createdAt: '2026-08-12T20:00:00.000Z',

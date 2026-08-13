@@ -1,13 +1,13 @@
-import { snapCutProjectSchema, snapCutProjectV1Schema } from './schemas';
-import type { SnapCutProject, SnapCutProjectV1 } from './types';
+import { snapCutProjectSchema, snapCutProjectV1Schema, snapCutProjectV2Schema } from './schemas';
+import type { SnapCutProject, SnapCutProjectV1, SnapCutProjectV2 } from './types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function migrateProjectV1ToV2(input: SnapCutProjectV1): SnapCutProject {
+export function migrateProjectV1ToV2(input: SnapCutProjectV1): SnapCutProjectV2 {
   const project = snapCutProjectV1Schema.parse(input);
-  return snapCutProjectSchema.parse({
+  return snapCutProjectV2Schema.parse({
     ...project,
     schemaVersion: 2,
     sources: project.sources.map((source) => ({
@@ -18,6 +18,15 @@ export function migrateProjectV1ToV2(input: SnapCutProjectV1): SnapCutProject {
       encoderPaddingFrames: null,
       privateAudioSha256: null,
     })),
+  }) as SnapCutProjectV2;
+}
+
+export function migrateProjectV2ToV3(input: SnapCutProjectV2): SnapCutProject {
+  const project = snapCutProjectV2Schema.parse(input);
+  return snapCutProjectSchema.parse({
+    ...project,
+    schemaVersion: 3,
+    namePromptCompleted: true,
   }) as SnapCutProject;
 }
 
@@ -31,7 +40,13 @@ export function parseSnapCutProject(input: unknown): SnapCutProject {
   }
 
   if (input.schemaVersion === 1) {
-    return migrateProjectV1ToV2(snapCutProjectV1Schema.parse(input) as SnapCutProjectV1);
+    return migrateProjectV2ToV3(
+      migrateProjectV1ToV2(snapCutProjectV1Schema.parse(input) as SnapCutProjectV1),
+    );
+  }
+
+  if (input.schemaVersion === 2) {
+    return migrateProjectV2ToV3(snapCutProjectV2Schema.parse(input) as SnapCutProjectV2);
   }
 
   return snapCutProjectSchema.parse(input) as SnapCutProject;

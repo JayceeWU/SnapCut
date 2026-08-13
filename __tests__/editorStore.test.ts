@@ -29,7 +29,8 @@ const source = (
 });
 
 const project = (sources: SnapCutSource[]): SnapCutProject => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
+  namePromptCompleted: true,
   id: '11111111-1111-4111-8111-111111111111',
   name: 'Editor test',
   createdAt: '2026-08-12T20:00:00.000Z',

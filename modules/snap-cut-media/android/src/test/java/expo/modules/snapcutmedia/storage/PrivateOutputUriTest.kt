@@ -31,6 +31,17 @@ class PrivateOutputUriTest {
   }
 
   @Test
+  fun `accepts missing nested directories below a normal private root`() {
+    val stagingRoot = temporaryFolder.newFolder("nested-root")
+    val output = File(stagingRoot, ".import-job/missing/nested/source.m4a.partial")
+
+    assertEquals(
+      output.canonicalFile,
+      PrivateOutputUri.requireSafeFileUri(output.toURI().toString(), listOf(stagingRoot))
+    )
+  }
+
+  @Test
   fun `rejects root sibling traversal content URI query and fragment`() {
     val stagingRoot = temporaryFolder.newFolder("staging-root")
     val sibling = temporaryFolder.newFolder("staging-root-other")

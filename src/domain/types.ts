@@ -68,7 +68,7 @@ export interface SnapCutProjectV1 {
   lastExport: SnapCutExportRecord | null;
 }
 
-export interface SnapCutProject {
+export interface SnapCutProjectV2 {
   schemaVersion: 2;
   id: string;
   name: string;
@@ -77,6 +77,11 @@ export interface SnapCutProject {
   sources: SnapCutSource[];
   clips: SnapCutClip[];
   lastExport: SnapCutExportRecord | null;
+}
+
+export interface SnapCutProject extends Omit<SnapCutProjectV2, 'schemaVersion'> {
+  schemaVersion: 3;
+  namePromptCompleted: boolean;
 }
 
 export interface SourceFileV1 {

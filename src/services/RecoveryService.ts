@@ -285,7 +285,7 @@ export class RecoveryService {
     diagnostics: RecoveryDiagnostic[],
   ): Promise<SnapCutProject | null> {
     const destinationUri = this.layout.fileSystem.join(entry.uri, PROJECT_FILE_NAME);
-    return this.recoverJson(
+    const project = await this.recoverJson(
       destinationUri,
       (raw) => {
         const project = parseSnapCutProject(raw);
@@ -297,6 +297,24 @@ export class RecoveryService {
       (temporary) => this.journalProvesCommit(entry.uri, temporary),
       diagnostics,
     );
+    if (project === null) return null;
+
+    const persistedVersion = await this.readPersistedSchemaVersion(destinationUri);
+    if (persistedVersion !== project.schemaVersion) {
+      return this.json.write(destinationUri, project, (raw) => parseSnapCutProject(raw));
+    }
+    return project;
+  }
+
+  private async readPersistedSchemaVersion(uri: string): Promise<number | null> {
+    try {
+      const raw = JSON.parse(await this.layout.fileSystem.readText(uri)) as unknown;
+      if (typeof raw !== 'object' || raw === null || !('schemaVersion' in raw)) return null;
+      const version = (raw as { schemaVersion?: unknown }).schemaVersion;
+      return typeof version === 'number' ? version : null;
+    } catch {
+      return null;
+    }
   }
 
   private async journalProvesCommit(
@@ -476,24 +494,33 @@ export class RecoveryService {
   }
 
   private async rebuildIndex(projects: readonly SnapCutProject[]): Promise<boolean> {
+    const expected = projectIndexSchema.parse({
+      schemaVersion: 1 as const,
+      projects: projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+        sourceCount: project.sources.length,
+        clipCount: project.clips.length,
+        compositionDurationMs: project.clips.reduce(
+          (duration, clip) => duration + clip.endMs - clip.startMs,
+          0,
+        ),
+      })),
+    });
+    try {
+      const current = projectIndexSchema.parse(
+        JSON.parse(await this.layout.fileSystem.readText(this.layout.indexUri)),
+      );
+      if (JSON.stringify(current) === JSON.stringify(expected)) return false;
+    } catch {
+      // Missing or invalid cache is rebuilt from authoritative project folders.
+    }
     try {
       await this.json.write(
         this.layout.indexUri,
-        {
-          schemaVersion: 1 as const,
-          projects: projects.map((project) => ({
-            id: project.id,
-            name: project.name,
-            createdAt: project.createdAt,
-            updatedAt: project.updatedAt,
-            sourceCount: project.sources.length,
-            clipCount: project.clips.length,
-            compositionDurationMs: project.clips.reduce(
-              (duration, clip) => duration + clip.endMs - clip.startMs,
-              0,
-            ),
-          })),
-        },
+        expected,
         (raw) => projectIndexSchema.parse(raw),
         { preserveInvalidCommitted: true },
       );

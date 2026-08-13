@@ -693,11 +693,15 @@ export const projectRepository = new ProjectRepository({
   onRecoveryDiagnostic: (diagnostic) => {
     const projectId = 'projectId' in diagnostic ? diagnostic.projectId : undefined;
     const jobId = 'jobId' in diagnostic ? diagnostic.jobId : undefined;
-    void diagnosticLog.append('warn', 'repository.recovery', {
-      operation: 'repository',
-      code: diagnostic.code,
-      ...(projectId === undefined ? {} : { projectId }),
-      ...(jobId === undefined ? {} : { jobId }),
-    });
+    void diagnosticLog.append(
+      diagnostic.code === 'INDEX_REBUILT' ? 'info' : 'warn',
+      'repository.recovery',
+      {
+        operation: 'repository',
+        code: diagnostic.code,
+        ...(projectId === undefined ? {} : { projectId }),
+        ...(jobId === undefined ? {} : { jobId }),
+      },
+    );
   },
 });

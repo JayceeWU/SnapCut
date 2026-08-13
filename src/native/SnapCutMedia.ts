@@ -274,6 +274,10 @@ const nativeErrorEventSchema = z
     ...baseJobEventShape,
     code: z.enum(SNAP_CUT_MEDIA_ERROR_CODES),
     message: z.string().trim().min(1),
+    nativeStage: z.string().trim().min(1).max(40).optional(),
+    causeCategory: z
+      .enum(['provider', 'extractor', 'decoder', 'job', 'linkage', 'native'])
+      .optional(),
     format: snapCutExportFormatSchema.optional(),
   })
   .strict();
@@ -286,7 +290,8 @@ const eventSchemas = {
 } as const;
 
 export class SnapCutMediaContractError extends Error {
-  readonly code: SnapCutMediaErrorCode = 'UNKNOWN_NATIVE_ERROR';
+  readonly code = 'INVALID_NATIVE_RESULT' as const;
+  readonly issuePaths: readonly string[];
 
   constructor(
     message: string,
@@ -294,6 +299,13 @@ export class SnapCutMediaContractError extends Error {
   ) {
     super(message);
     this.name = 'SnapCutMediaContractError';
+    this.issuePaths =
+      cause instanceof z.ZodError
+        ? [...new Set(cause.issues.map((issue) => issue.path.join('.')).filter(Boolean))].slice(
+            0,
+            6,
+          )
+        : [];
   }
 }
 

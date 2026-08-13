@@ -41,6 +41,9 @@ export function createImportRuntime(
           stage: entry.stage,
           code: entry.code,
           generation: entry.generation,
+          ...(entry.nativeStage === undefined ? {} : { nativeStage: entry.nativeStage }),
+          ...(entry.causeCategory === undefined ? {} : { causeCategory: entry.causeCategory }),
+          ...(entry.contractFields === undefined ? {} : { contractFields: entry.contractFields }),
         });
       },
     }),

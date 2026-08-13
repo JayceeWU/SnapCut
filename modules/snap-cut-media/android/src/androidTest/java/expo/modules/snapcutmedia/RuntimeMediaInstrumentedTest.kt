@@ -28,7 +28,7 @@ class RuntimeMediaInstrumentedTest {
   @Before
   fun setUp() {
     spoolRoot = freshFixtureDirectory(testContext, "runtime-media-spool")
-    inspector = SourceInspector(resolver, spoolRoot)
+    inspector = SourceInspector(resolver, spoolRoot, testContext)
   }
 
   @After

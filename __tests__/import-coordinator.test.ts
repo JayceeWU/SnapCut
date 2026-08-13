@@ -1,6 +1,6 @@
 import { addSource } from '@/domain/projects';
 import type { SnapCutProject } from '@/domain/types';
-import type { ProgressEvent } from '@/native/SnapCutMedia.events';
+import type { NativeErrorEvent, ProgressEvent } from '@/native/SnapCutMedia.events';
 import type { ImportResult, PickedSource, SourceInspection } from '@/native/SnapCutMedia.types';
 import type {
   BeginImportInput,
@@ -10,6 +10,7 @@ import type {
 import { HeavyMediaTaskQueue } from '@/services/HeavyMediaTaskQueue';
 import {
   ImportCoordinator,
+  type ImportDiagnostic,
   type ImportMediaPort,
   type ImportRepositoryPort,
 } from '@/services/ImportCoordinator';
@@ -43,7 +44,8 @@ const inspection: SourceInspection = {
 
 function emptyProject(): SnapCutProject {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    namePromptCompleted: true,
     id: PROJECT_ID,
     name: 'Project',
     createdAt: NOW,
@@ -74,13 +76,14 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
 
 class FakeMedia implements ImportMediaPort {
   pickResults: (PickedSource | null | Error | Promise<PickedSource | null>)[] = [];
-  inspectResults: (SourceInspection | Error)[] = [];
+  inspectResults: (SourceInspection | Error | Promise<SourceInspection>)[] = [];
   importResults: (ImportResult | Error | Promise<ImportResult>)[] = [];
   readonly inspectRequests: Parameters<ImportMediaPort['inspectSource']>[0][] = [];
   readonly importRequests: Parameters<ImportMediaPort['importSource']>[0][] = [];
   readonly cancelled: string[] = [];
   cancelError: Error | null = null;
   private listener: ((event: ProgressEvent) => void) | null = null;
+  private errorListener: ((event: NativeErrorEvent) => void) | null = null;
 
   async pickSource(): Promise<PickedSource | null> {
     const value = this.pickResults.shift() ?? null;
@@ -94,7 +97,7 @@ class FakeMedia implements ImportMediaPort {
     this.inspectRequests.push(request);
     const value = this.inspectResults.shift() ?? inspection;
     if (value instanceof Error) throw value;
-    return value;
+    return await value;
   }
 
   async importSource(
@@ -114,15 +117,29 @@ class FakeMedia implements ImportMediaPort {
   addEventListener(
     eventName: 'onImportProgress',
     listener: (event: ProgressEvent) => void,
+  ): { remove(): void };
+  addEventListener(
+    eventName: 'onNativeError',
+    listener: (event: NativeErrorEvent) => void,
+  ): { remove(): void };
+  addEventListener(
+    eventName: 'onImportProgress' | 'onNativeError',
+    listener: ((event: ProgressEvent) => void) | ((event: NativeErrorEvent) => void),
   ): { remove(): void } {
     if (eventName === 'onImportProgress') {
-      this.listener = listener;
+      this.listener = listener as (event: ProgressEvent) => void;
+      return { remove: () => (this.listener = null) };
     }
-    return { remove: () => (this.listener = null) };
+    this.errorListener = listener as (event: NativeErrorEvent) => void;
+    return { remove: () => (this.errorListener = null) };
   }
 
   emit(event: ProgressEvent): void {
     this.listener?.(event);
+  }
+
+  emitError(event: NativeErrorEvent): void {
+    this.errorListener?.(event);
   }
 }
 
@@ -195,7 +212,7 @@ function resultFor(outputFileUri: string, inspected: SourceInspection = inspecti
   };
 }
 
-function setup() {
+function setup(onDiagnostic?: (diagnostic: ImportDiagnostic) => void) {
   const media = new FakeMedia();
   const repository = new FakeRepository();
   const states = new StateRecorder();
@@ -213,6 +230,7 @@ function setup() {
         scheduled.push(request);
       },
     },
+    ...(onDiagnostic === undefined ? {} : { onDiagnostic }),
   });
   return { media, repository, states, coordinator, scheduled };
 }
@@ -382,6 +400,44 @@ describe('ImportCoordinator', () => {
       },
     });
     expect(repository.finalized).toHaveLength(0);
+  });
+
+  it('records only safe native inspection stage and category details', async () => {
+    const onDiagnostic = jest.fn();
+    const { media, states, coordinator } = setup(onDiagnostic);
+    const pending = deferred<SourceInspection>();
+    media.pickResults.push(picked());
+    media.inspectResults.push(pending.promise);
+    const outcomePromise = coordinator.importIntoProject(PROJECT_ID);
+    await waitUntil(() => states.last().stage === 'inspecting');
+
+    media.emitError({
+      jobId: 'job-1',
+      operation: 'import',
+      sequence: 1,
+      stage: 'extractor_open',
+      generation: 1,
+      code: 'SOURCE_UNREADABLE',
+      message: 'The selected media cannot be opened.',
+      nativeStage: 'extractor_open',
+      causeCategory: 'provider',
+    });
+    pending.reject(
+      Object.assign(new Error('content://private/item'), { code: 'SOURCE_UNREADABLE' }),
+    );
+
+    await expect(outcomePromise).resolves.toMatchObject({
+      status: 'failed',
+      failure: { code: 'SOURCE_UNREADABLE' },
+    });
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'SOURCE_UNREADABLE',
+        nativeStage: 'extractor_open',
+        causeCategory: 'provider',
+      }),
+    );
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain('content://');
   });
 
   it('accepts only increasing progress sequences for the current generation', async () => {

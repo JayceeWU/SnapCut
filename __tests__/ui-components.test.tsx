@@ -13,7 +13,8 @@ import { copy } from '@/constants';
 import type { SnapCutProject } from '@/domain';
 
 const projectFixture: SnapCutProject = {
-  schemaVersion: 2,
+  schemaVersion: 3,
+  namePromptCompleted: true,
   id: '11111111-1111-4111-8111-111111111111',
   name: 'Repair me',
   createdAt: '2026-08-12T20:00:00.000Z',
@@ -63,17 +64,17 @@ describe('shared UI components', () => {
   it('validates and trims a project name before submission', async () => {
     const onSubmit = jest.fn();
     const screen = await render(
-      <ProjectNameModal mode="create" onCancel={jest.fn()} onSubmit={onSubmit} visible />,
+      <ProjectNameModal onCancel={jest.fn()} onSubmit={onSubmit} visible />,
     );
 
-    await fireEvent.press(screen.getByRole('button', { name: copy.nameDialog.createAction }));
+    await fireEvent.press(screen.getByRole('button', { name: copy.nameDialog.saveAction }));
     expect(screen.getByText(copy.nameDialog.requiredError)).toBeTruthy();
 
     await fireEvent.changeText(
       screen.getByLabelText(copy.nameDialog.fieldLabel),
       '  Purple Session  ',
     );
-    await fireEvent.press(screen.getByRole('button', { name: copy.nameDialog.createAction }));
+    await fireEvent.press(screen.getByRole('button', { name: copy.nameDialog.saveAction }));
     expect(onSubmit).toHaveBeenCalledWith('Purple Session');
   });
 

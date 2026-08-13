@@ -11,7 +11,7 @@ export interface ProjectRepositoryPort {
   initialize(): MaybePromise<void>;
   list(): MaybePromise<SnapCutProject[]>;
   get(id: string): MaybePromise<SnapCutProject | null>;
-  create(options: { name: string }): MaybePromise<SnapCutProject>;
+  create(options?: { name?: string | null }): MaybePromise<SnapCutProject>;
   save(project: SnapCutProject): MaybePromise<SnapCutProject>;
   rename(id: string, name: string): MaybePromise<SnapCutProject>;
   delete(id: string): MaybePromise<void>;
@@ -40,7 +40,7 @@ interface ProjectStoreState {
   configureRepository: (repository: ProjectRepositoryPort) => void;
   loadProjects: () => Promise<void>;
   loadProject: (projectId: string) => Promise<void>;
-  createProject: (name: string) => Promise<SnapCutProject | null>;
+  createProject: (name?: string | null) => Promise<SnapCutProject | null>;
   renameProject: (projectId: string, name: string) => Promise<boolean>;
   deleteProject: (projectId: string) => Promise<boolean>;
   deleteCorruptProject: (projectId: string) => Promise<boolean>;
@@ -188,7 +188,7 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
     set({ mutation: 'create', error: null });
     try {
       const repository = await initializeRepository();
-      const project = await repository.create({ name });
+      const project = await repository.create(name === undefined ? {} : { name });
       set((state) => ({
         projects: replaceProject(state.projects, project),
         repairStatuses: {

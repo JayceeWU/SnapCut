@@ -21,7 +21,8 @@ function verifier(
 
 function project(name = 'Project'): SnapCutProject {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    namePromptCompleted: true,
     id: PROJECT_ID,
     name,
     createdAt: NOW,
@@ -128,6 +129,48 @@ async function setupStagedImport(privateMediaVerifier?: PrivateMediaVerifier) {
 }
 
 describe('atomic JSON storage and startup recovery', () => {
+  it('rebuilds a missing index once and leaves an unchanged cache untouched later', async () => {
+    const { layout } = setup();
+    await seedProject(layout, project('Indexed'));
+    const recovery = new RecoveryService(layout, { privateMediaVerifier: verifier() });
+
+    const first = await recovery.recover();
+    const second = await recovery.recover();
+
+    expect(first.diagnostics).toContainEqual({ code: 'INDEX_REBUILT', projectCount: 1 });
+    expect(second.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: 'INDEX_REBUILT' }),
+    );
+  });
+
+  it('atomically persists a recovered schema v2 project as v3 without prompting', async () => {
+    const { fileSystem, layout } = setup();
+    const current = project('Legacy v2');
+    const { namePromptCompleted: _completed, ...withoutPrompt } = current;
+    fileSystem.ensureDirectory(layout.projectDirectoryUri(PROJECT_ID));
+    fileSystem.ensureDirectory(layout.projectSourcesDirectoryUri(PROJECT_ID));
+    fileSystem.writeText(
+      layout.projectMetadataUri(PROJECT_ID),
+      JSON.stringify({ ...withoutPrompt, schemaVersion: 2 }),
+    );
+
+    const report = await new RecoveryService(layout, {
+      privateMediaVerifier: verifier(),
+    }).recover();
+    const persisted = JSON.parse(
+      await fileSystem.readText(layout.projectMetadataUri(PROJECT_ID)),
+    ) as Record<string, unknown>;
+
+    expect(report.projects[0]?.project).toMatchObject({
+      schemaVersion: 3,
+      name: 'Legacy v2',
+      namePromptCompleted: true,
+    });
+    expect(persisted).toMatchObject({ schemaVersion: 3, namePromptCompleted: true });
+    expect(fileSystem.fileExists(`${layout.projectMetadataUri(PROJECT_ID)}.tmp`)).toBe(false);
+    expect(fileSystem.fileExists(`${layout.projectMetadataUri(PROJECT_ID)}.bak`)).toBe(false);
+  });
+
   it('writes temp, verifies it, backs up final, and commits in the same directory', async () => {
     const { fileSystem, layout } = setup();
     const json = new AtomicJsonStore(fileSystem);

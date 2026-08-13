@@ -22,6 +22,9 @@ export interface DiagnosticFields {
   jobId?: string;
   appVersion?: string;
   androidVersion?: string | number;
+  nativeStage?: string;
+  causeCategory?: string;
+  contractFields?: string;
 }
 
 export interface DiagnosticEntry {
@@ -48,6 +51,9 @@ const SAFE_FIELD_KEYS = new Set<keyof DiagnosticFields>([
   'jobId',
   'appVersion',
   'androidVersion',
+  'nativeStage',
+  'causeCategory',
+  'contractFields',
 ]);
 const SAFE_VALUE = z.union([z.string().max(80), z.number().finite(), z.boolean()]);
 const diagnosticEntrySchema = z

@@ -80,6 +80,67 @@ describe('SnapCutMedia TypeScript boundary', () => {
     });
   });
 
+  test('accepts the explicit primitive source-inspection bridge map', async () => {
+    const native = nativeModule({
+      inspectSource: async () => ({
+        sourceKind: 'video-extracted-aac',
+        codecMime: 'audio/mp4a-latm',
+        durationMs: 12_345,
+        sampleRateHz: 48_000,
+        channelCount: 2,
+        encodedBitrateBps: 192_000,
+        pcmBitsPerSample: null,
+        aacProfile: 'aac-lc',
+        codecConfigFingerprint: 'a'.repeat(64),
+        encoderDelayFrames: 0,
+        encoderPaddingFrames: null,
+        fileSizeBytes: 500,
+        requiresStreamingSizeVerification: false,
+        drmProtected: false,
+      }),
+    });
+
+    await expect(
+      createSnapCutMediaClient(() => native).inspectSource({
+        jobId: 'job-1',
+        generation: 1,
+        sourceUri: 'content://provider/item',
+        maxSourceBytes: 600 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({ sourceKind: 'video-extracted-aac', aacProfile: 'aac-lc' });
+  });
+
+  test('classifies malformed inspection results without retaining private values', async () => {
+    const native = nativeModule({
+      inspectSource: async () =>
+        ({
+          sourceKind: 'content://private/provider/item',
+          codecMime: 'private-name.mp3',
+        }) as never,
+    });
+
+    const error = await createSnapCutMediaClient(() => native)
+      .inspectSource({
+        jobId: 'job-1',
+        generation: 1,
+        sourceUri: 'content://provider/item',
+        maxSourceBytes: 600 * 1024 * 1024,
+      })
+      .catch((value: unknown) => value);
+
+    expect(error).toBeInstanceOf(SnapCutMediaContractError);
+    expect(error).toMatchObject({
+      code: 'INVALID_NATIVE_RESULT',
+      issuePaths: expect.arrayContaining(['sourceKind', 'durationMs']),
+    });
+    expect(JSON.stringify((error as SnapCutMediaContractError).issuePaths)).not.toContain(
+      'content://',
+    );
+    expect(JSON.stringify((error as SnapCutMediaContractError).issuePaths)).not.toContain(
+      'private-name',
+    );
+  });
+
   test('rejects malformed native health and unknown fields', () => {
     const native = nativeModule({
       getHealth: () =>

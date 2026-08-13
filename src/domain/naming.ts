@@ -62,6 +62,14 @@ function pad2(value: number): string {
   return value.toString().padStart(2, '0');
 }
 
+export function createDefaultProjectName(at: Date): string {
+  if (Number.isNaN(at.getTime())) {
+    throw new DomainError('INVALID_PROJECT_NAME', 'Project date must be valid');
+  }
+
+  return `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())} ${pad2(at.getHours())}-${pad2(at.getMinutes())}-${pad2(at.getSeconds())}`;
+}
+
 export function createDefaultExportBaseName(projectName: string, at: Date): string {
   const normalizedProjectName = normalizeProjectName(projectName);
   if (Number.isNaN(at.getTime())) {

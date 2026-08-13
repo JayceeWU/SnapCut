@@ -1,4 +1,4 @@
-export const CURRENT_PROJECT_SCHEMA_VERSION = 2 as const;
+export const CURRENT_PROJECT_SCHEMA_VERSION = 3 as const;
 export const PROJECT_INDEX_SCHEMA_VERSION = 1 as const;
 export const SOURCE_FILE_SCHEMA_VERSION = 1 as const;
 export const WAVEFORM_SCHEMA_VERSION = 1 as const;

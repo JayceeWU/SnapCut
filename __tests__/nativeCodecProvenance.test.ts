@@ -90,6 +90,7 @@ function readLock(): NativeSourceLock {
 describe('pinned native codec source provenance', () => {
   test('locks official archives and the exact extracted source trees', () => {
     const lock = readLock();
+    const actualFingerprints: Record<string, { fileCount: number; sha256: string }> = {};
     expect(lock.schemaVersion).toBe(1);
     expect(lock.dependencies.map(({ name }) => name).sort()).toEqual(
       Object.keys(EXPECTED_PINS).sort(),
@@ -106,11 +107,20 @@ describe('pinned native codec source provenance', () => {
       expect(existsSync(path.join(THIRD_PARTY_ROOT, expected.license))).toBe(true);
 
       const fingerprint = fingerprintTree(path.join(THIRD_PARTY_ROOT, dependency.vendoredPath));
-      expect(fingerprint).toEqual({
-        fileCount: dependency.vendoredFileCount,
-        sha256: dependency.vendoredTreeSha256,
-      });
+      actualFingerprints[dependency.name] = fingerprint;
     }
+
+    expect(actualFingerprints).toEqual(
+      Object.fromEntries(
+        lock.dependencies.map((dependency) => [
+          dependency.name,
+          {
+            fileCount: dependency.vendoredFileCount,
+            sha256: dependency.vendoredTreeSha256,
+          },
+        ]),
+      ),
+    );
   });
 
   test('contains no prebuilt native artifacts or LAME decoder and CLI sources', () => {

@@ -6,6 +6,8 @@ on:
     paths:
       - .github/workflows/android-instrumentation.yml
       - package-lock.json
+      - modules/snap-cut-media/android/src/main/**
+      - modules/snap-cut-media/android/src/androidTest/**
   workflow_dispatch:
 
 permissions:

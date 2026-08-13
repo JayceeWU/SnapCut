@@ -37,10 +37,11 @@ internal class CompletedDecodedOutputVerifier {
       ExportFormat.MP3 -> SnapCutMediaError.MP3_VERIFICATION_FAILED
       ExportFormat.M4A -> throw mediaError(SnapCutMediaError.EXPORT_FORMAT_UNAVAILABLE)
     }
+    fun fail(stage: String): Nothing = throw mediaError(verificationError, stage)
     try {
       cancellation.throwIfCancelled()
       if (!file.isFile || file.length() <= 0L || expectedFrames <= 0L) {
-        throw mediaError(verificationError)
+        fail("file")
       }
       val resource = ExportExtractorResource(MediaExtractor(), hooks)
       try {
@@ -51,7 +52,7 @@ internal class CompletedDecodedOutputVerifier {
           val mime = track.stringOrNull(MediaFormat.KEY_MIME)
           if (mime?.startsWith("audio/") == true) Triple(index, track, mime) else null
         }
-        if (audioTracks.size != 1) throw mediaError(verificationError)
+        if (audioTracks.size != 1) fail("track-count")
         val (trackIndex, trackFormat, mime) = audioTracks.single()
         val acceptedMime = when (format) {
           ExportFormat.FLAC -> mime == "audio/flac" || mime == "audio/x-flac"
@@ -61,17 +62,14 @@ internal class CompletedDecodedOutputVerifier {
         val sampleRate = trackFormat.integerOrNull(MediaFormat.KEY_SAMPLE_RATE)
         val channels = trackFormat.integerOrNull(MediaFormat.KEY_CHANNEL_COUNT)
         val durationUs = trackFormat.longOrNull(MediaFormat.KEY_DURATION)
+        if (!acceptedMime) fail("mime")
+        if (sampleRate != expectedSampleRateHz) fail("sample-rate")
+        if (channels != expectedChannelCount) fail("channel-count")
+        if (durationUs == null || durationUs <= 0L) fail("duration-missing")
         if (
-          !acceptedMime ||
-          sampleRate != expectedSampleRateHz ||
-          channels != expectedChannelCount ||
-          durationUs == null ||
-          durationUs <= 0L ||
           MediaCodecList(MediaCodecList.REGULAR_CODECS)
             .findDecoderForFormat(trackFormat) == null
-        ) {
-          throw mediaError(verificationError)
-        }
+        ) fail("decoder")
         val expectedDurationUs = framesToDurationUs(expectedFrames, expectedSampleRateHz)
         val toleranceUs = when (format) {
           ExportFormat.FLAC -> FLAC_DURATION_TOLERANCE_US
@@ -81,7 +79,7 @@ internal class CompletedDecodedOutputVerifier {
           ExportFormat.M4A -> 0L
         }
         if (abs(durationUs - expectedDurationUs) > toleranceUs) {
-          throw mediaError(verificationError)
+          fail("duration-mismatch")
         }
 
         extractor.selectTrack(trackIndex)
@@ -92,12 +90,13 @@ internal class CompletedDecodedOutputVerifier {
           val timestamp = extractor.sampleTime
           val size = extractor.sampleSize
           if (timestamp < 0L || size < 0L) break
-          if (size == 0L || timestamp < lastTimestampUs) throw mediaError(verificationError)
+          if (size == 0L) fail("empty-sample")
+          if (timestamp < lastTimestampUs) fail("timestamp-order")
           lastTimestampUs = timestamp
           sampleCount += 1L
           if (!extractor.advance()) break
         }
-        if (sampleCount <= 0L || lastTimestampUs < 0L) throw mediaError(verificationError)
+        if (sampleCount <= 0L || lastTimestampUs < 0L) fail("samples-missing")
         return VerifiedDecodedOutput(
           actualDurationMs = ceilDivide(durationUs, 1_000L),
           fileSizeBytes = file.length(),

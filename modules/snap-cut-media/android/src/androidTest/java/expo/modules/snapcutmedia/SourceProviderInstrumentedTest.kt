@@ -124,7 +124,7 @@ class SourceProviderInstrumentedTest {
       "transport" to "file",
       "cursorSize" to "actual",
       "assetSize" to "actual",
-      "deny" to "file",
+      "deny" to "all",
       "token" to secret
     )
 

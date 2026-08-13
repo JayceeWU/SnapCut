@@ -4,6 +4,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import expo.modules.snapcutmedia.errors.SnapCutMediaException
 import expo.modules.snapcutmedia.models.ExportFormat
 import expo.modules.snapcutmedia.source.CancellationCheck
 import expo.modules.snapcutmedia.source.MediaResourceHooks
@@ -162,15 +163,22 @@ class NativeExportCodecInstrumentedTest {
           extractor.release()
         }
 
-        val verified = CompletedDecodedOutputVerifier().verify(
-          file = file,
-          format = format,
-          expectedFrames = frames.toLong(),
-          expectedSampleRateHz = 48_000,
-          expectedChannelCount = 2,
-          cancellation = CancellationCheck.NONE,
-          hooks = MediaResourceHooks.NONE
-        )
+        val verified = try {
+          CompletedDecodedOutputVerifier().verify(
+            file = file,
+            format = format,
+            expectedFrames = frames.toLong(),
+            expectedSampleRateHz = 48_000,
+            expectedChannelCount = 2,
+            cancellation = CancellationCheck.NONE,
+            hooks = MediaResourceHooks.NONE
+          )
+        } catch (error: SnapCutMediaException) {
+          throw AssertionError(
+            "${format.name} verifier failed at ${error.technicalContext ?: "unclassified"}",
+            error
+          )
+        }
         assertEquals(48_000, verified.sampleRateHz)
         assertEquals(2, verified.channelCount)
       }

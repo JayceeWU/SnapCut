@@ -52,7 +52,8 @@ internal data class ContainerProbe(
   val isIsoBmff: Boolean,
   val hasMovieBox: Boolean,
   val hasMovieFragmentBox: Boolean,
-  val isWave: Boolean
+  val isWave: Boolean,
+  val isFlac: Boolean = false
 ) {
   val isFragmentedMp4: Boolean get() = isIsoBmff && hasMovieFragmentBox
   val isFragmentMissingInitialization: Boolean
@@ -76,6 +77,7 @@ internal data class ContainerProbe(
       val isWave = bytes.size >= 12 &&
         ascii(bytes, 0, 4) == "RIFF" &&
         ascii(bytes, 8, 4) == "WAVE"
+      val isFlac = bytes.size >= 4 && ascii(bytes, 0, 4) == "fLaC"
       var offset = 0L
       var sawIsoBox = false
       var sawMoov = false
@@ -102,7 +104,7 @@ internal data class ContainerProbe(
         if (next <= offset || next > bytes.size.toLong()) break
         offset = next
       }
-      return ContainerProbe(sawIsoBox, sawMoov, sawMoof, isWave)
+      return ContainerProbe(sawIsoBox, sawMoov, sawMoof, isWave, isFlac)
     }
 
     private fun ascii(bytes: ByteArray, offset: Int, length: Int): String {

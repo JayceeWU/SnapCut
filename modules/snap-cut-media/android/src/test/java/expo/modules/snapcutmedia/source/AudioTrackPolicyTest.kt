@@ -47,6 +47,18 @@ class AudioTrackPolicyTest {
   }
 
   @Test
+  fun `Android FLAC extractor PCM track is classified from the FLAC signature`() {
+    val selected = AudioTrackPolicy.select(
+      listOf(candidate(mime = "audio/raw")),
+      hasVideo = false,
+      probe = ContainerProbe(false, false, false, false, isFlac = true),
+      extractorHasDrm = false
+    )
+
+    assertEquals(SourceKind.FLAC, selected.sourceKind)
+  }
+
+  @Test
   fun `MP3 extractor content remains MP3 when the provider name ends in M4S`() {
     // File names never enter AudioTrackPolicy; the extractor MIME is authoritative.
     val selected = AudioTrackPolicy.select(

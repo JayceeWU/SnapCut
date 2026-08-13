@@ -48,6 +48,14 @@ class SourceIoTest {
   }
 
   @Test
+  fun `FLAC signature is content based`() {
+    val bytes = "fLaC".toByteArray(Charsets.US_ASCII) + ByteArray(16)
+
+    assertTrue(ContainerProbe.fromBytes(bytes).isFlac)
+    assertFalse(ContainerProbe.fromBytes("audio/raw".toByteArray()).isFlac)
+  }
+
+  @Test
   fun `picker requests single local media including opaque and M4S MIME types`() {
     assertTrue(SourcePicker.MIME_TYPES.contains("application/octet-stream"))
     assertTrue(SourcePicker.MIME_TYPES.contains("video/iso.segment"))

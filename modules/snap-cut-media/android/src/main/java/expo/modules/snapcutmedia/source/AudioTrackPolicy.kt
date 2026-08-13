@@ -93,7 +93,10 @@ internal object AudioTrackPolicy {
         encoderDelayFrames = format.long(MediaFormat.KEY_ENCODER_DELAY)?.takeIf { it >= 0L },
         encoderPaddingFrames = format.long(MediaFormat.KEY_ENCODER_PADDING)?.takeIf { it >= 0L },
         encrypted = format.int("is-encrypted") == 1 || format.int("crypto-mode") != null,
-        decoderAvailable = decoderAvailability.hasDecoder(format)
+        // Android's standalone FLAC extractor exposes decoded PCM as audio/raw.
+        // The fLaC signature keeps this distinct from ordinary WAV/PCM input.
+        decoderAvailable =
+          (mime == "audio/raw" && probe.isFlac) || decoderAvailability.hasDecoder(format)
       )
     }
     return candidates to hasVideo
@@ -114,6 +117,7 @@ internal object AudioTrackPolicy {
       candidate.mime == MIME_AAC ||
         candidate.mime in MP3_MIMES ||
         candidate.mime in FLAC_MIMES ||
+        (candidate.mime == "audio/raw" && probe.isFlac) ||
         (candidate.mime in PCM_MIMES && probe.isWave)
     }
     if (recognized.isEmpty()) throw mediaError(SnapCutMediaError.UNSUPPORTED_AUDIO_CODEC)
@@ -135,7 +139,11 @@ internal object AudioTrackPolicy {
     if (hasVideo && decodable.mime != MIME_AAC) {
       throw mediaError(SnapCutMediaError.UNSUPPORTED_AUDIO_CODEC)
     }
-    if (decodable.mime in PCM_MIMES && decodable.pcmBitsPerSample !in setOf(8, 16, 24, 32)) {
+    if (
+      decodable.mime in PCM_MIMES &&
+      !probe.isFlac &&
+      decodable.pcmBitsPerSample !in setOf(8, 16, 24, 32)
+    ) {
       throw mediaError(SnapCutMediaError.UNSUPPORTED_AUDIO_CODEC)
     }
 
@@ -144,7 +152,7 @@ internal object AudioTrackPolicy {
       decodable.mime == MIME_AAC && probe.isFragmentedMp4 -> SourceKind.M4S_AAC
       decodable.mime == MIME_AAC -> SourceKind.M4A
       decodable.mime in MP3_MIMES -> SourceKind.MP3
-      decodable.mime in FLAC_MIMES -> SourceKind.FLAC
+      decodable.mime in FLAC_MIMES || (decodable.mime == "audio/raw" && probe.isFlac) -> SourceKind.FLAC
       else -> SourceKind.WAV
     }
     return SelectedAudioTrack(decodable, kind)

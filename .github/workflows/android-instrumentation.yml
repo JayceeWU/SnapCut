@@ -55,7 +55,8 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
+          target: google_apis
           arch: x86_64
           profile: pixel_2
           disable-animations: true
-          script: adb wait-for-device && sh -c 'attempt=0; until adb shell service check package 2>/dev/null | grep -q "found"; do attempt=$((attempt + 1)); if [ "$attempt" -ge 60 ]; then exit 1; fi; sleep 2; done' && ./android/gradlew -p android :snap-cut-media:connectedDebugAndroidTest --stacktrace --no-daemon
+          script: adb wait-for-device && sh -c 'attempt=0; until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ] && adb shell service check package 2>/dev/null | grep -q "Service package: found"; do attempt=$((attempt + 1)); if [ "$attempt" -ge 120 ]; then exit 1; fi; sleep 2; done' && ./android/gradlew -p android :snap-cut-media:connectedDebugAndroidTest --stacktrace --no-daemon

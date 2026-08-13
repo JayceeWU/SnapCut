@@ -1,6 +1,10 @@
 name: Android instrumentation
 
 on:
+  push:
+    branches: [dev]
+    paths:
+      - .github/workflows/android-instrumentation.yml
   workflow_dispatch:
 
 permissions:

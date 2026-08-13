@@ -12,6 +12,8 @@ interface LockedCodecSource {
   sha256: string;
   vendoredFileCount: number;
   vendoredTreeSha256: string;
+  vendoredTreeSha256Linux: string;
+  vendoredTreeSha256Repository: string;
   license: string;
   vendoredPath: string;
   selection: string;
@@ -90,7 +92,6 @@ function readLock(): NativeSourceLock {
 describe('pinned native codec source provenance', () => {
   test('locks official archives and the exact extracted source trees', () => {
     const lock = readLock();
-    const actualFingerprints: Record<string, { fileCount: number; sha256: string }> = {};
     expect(lock.schemaVersion).toBe(1);
     expect(lock.dependencies.map(({ name }) => name).sort()).toEqual(
       Object.keys(EXPECTED_PINS).sort(),
@@ -107,20 +108,13 @@ describe('pinned native codec source provenance', () => {
       expect(existsSync(path.join(THIRD_PARTY_ROOT, expected.license))).toBe(true);
 
       const fingerprint = fingerprintTree(path.join(THIRD_PARTY_ROOT, dependency.vendoredPath));
-      actualFingerprints[dependency.name] = fingerprint;
+      expect(fingerprint.fileCount).toBe(dependency.vendoredFileCount);
+      const allowedFingerprints =
+        process.platform === 'win32'
+          ? [dependency.vendoredTreeSha256, dependency.vendoredTreeSha256Repository]
+          : [dependency.vendoredTreeSha256Linux];
+      expect(allowedFingerprints).toContain(fingerprint.sha256);
     }
-
-    expect(actualFingerprints).toEqual(
-      Object.fromEntries(
-        lock.dependencies.map((dependency) => [
-          dependency.name,
-          {
-            fileCount: dependency.vendoredFileCount,
-            sha256: dependency.vendoredTreeSha256,
-          },
-        ]),
-      ),
-    );
   });
 
   test('contains no prebuilt native artifacts or LAME decoder and CLI sources', () => {

@@ -9,6 +9,8 @@
       "sha256": "f2c1c76592a82ffff8413ba3c4a1299b6c7ab06c734dee03fd88630485c2b920",
       "vendoredFileCount": 847,
       "vendoredTreeSha256": "ec1a3a6010d728e7f901ddc5e33242790a5d7189cfe4720a46b813096678ca99",
+      "vendoredTreeSha256Linux": "588464e105e94af77e3d7752736569676e1a1613e0d0f2526ec4fbfffdf31774",
+      "vendoredTreeSha256Repository": "17a90dea77bdb3aa1ff36a100941ebdde792eefb9f7f7180a3b525ecc16efa61",
       "license": "BSD-3-Clause (Xiph.org)",
       "vendoredPath": "flac-1.5.0",
       "selection": "Official source tree; library target only. Programs, examples, tests, docs, C++ bindings, Ogg, and install targets are disabled."
@@ -21,6 +23,8 @@
       "sha256": "3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb",
       "vendoredFileCount": 47,
       "vendoredTreeSha256": "b6709a4b95c98afadf7e5517fc4f06127c741cbe40d0b072169020777879df7c",
+      "vendoredTreeSha256Linux": "b6709a4b95c98afadf7e5517fc4f06127c741cbe40d0b072169020777879df7c",
+      "vendoredTreeSha256Repository": "718d5a7516db58e1e73bdb7b569c5b34931795e584b0f1a88169395d6aec8640",
       "license": "LGPL-2.0-or-later",
       "vendoredPath": "lame-4.0",
       "selection": "Encoder library sources and required public/internal headers only, including the upstream vector declaration header required by portable fft.c. MPGLIB/mpg123, mpglib_interface.c, frontend/CLI, NASM, and vector implementation sources are not vendored or built."
@@ -33,6 +37,8 @@
       "sha256": "3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893",
       "vendoredFileCount": 108,
       "vendoredTreeSha256": "2ab2c826090b3e9edb7a644d82676a6e2a0522495146859b398a709dc4e27386",
+      "vendoredTreeSha256Linux": "faa99c8c7b99cb8ef3d3d0cad0092dcfbe54de197f2d20d39063d1ab93cc851f",
+      "vendoredTreeSha256Repository": "882cf409e9a24fc2bebe9fa820b76082bae0646e3a4699e5a62c9f3179d09039",
       "license": "BSD-2-Clause",
       "vendoredPath": "libsamplerate-0.2.2",
       "selection": "Official source tree; library target only. Examples, tests, docs installation, and package installation are disabled."

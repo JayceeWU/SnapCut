@@ -21,7 +21,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api-level: [29, 36]
+        include:
+          - api-level: 29
+            target: default
+          - api-level: 36
+            target: google_apis
 
     steps:
       - name: Checkout
@@ -51,11 +55,14 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x android/gradlew
 
+      - name: Build instrumentation APKs
+        run: ./android/gradlew -p android :snap-cut-media:assembleDebug :snap-cut-media:assembleDebugAndroidTest --stacktrace --no-daemon
+
       - name: Run module instrumentation
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
-          target: google_apis
+          target: ${{ matrix.target }}
           arch: x86_64
           profile: pixel_2
           disable-animations: true

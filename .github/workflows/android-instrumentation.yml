@@ -56,7 +56,7 @@ jobs:
         run: chmod +x android/gradlew
 
       - name: Build instrumentation APKs
-        run: ./android/gradlew -p android :snap-cut-media:assembleDebug :snap-cut-media:assembleDebugAndroidTest --stacktrace --no-daemon
+        run: ./android/gradlew -p android :snap-cut-media:assembleDebug :snap-cut-media:assembleDebugAndroidTest -PsnapcutInstrumentationAbi=x86_64 --stacktrace --no-daemon
 
       - name: Run module instrumentation
         uses: reactivecircus/android-emulator-runner@v2
@@ -67,4 +67,4 @@ jobs:
           profile: pixel_2
           disable-animations: true
           script: >-
-            adb wait-for-device && sh -c 'attempt=0; until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ] && adb shell service check package 2>/dev/null | grep -q "Service package: found"; do attempt=$((attempt + 1)); if [ "$attempt" -ge 120 ]; then exit 1; fi; sleep 2; done' && ./android/gradlew -p android :snap-cut-media:connectedDebugAndroidTest --stacktrace --no-daemon
+            adb wait-for-device && sh -c 'attempt=0; until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ] && adb shell service check package 2>/dev/null | grep -q "Service package: found"; do attempt=$((attempt + 1)); if [ "$attempt" -ge 120 ]; then exit 1; fi; sleep 2; done' && ./android/gradlew -p android :snap-cut-media:connectedDebugAndroidTest -PsnapcutInstrumentationAbi=x86_64 --stacktrace --no-daemon

@@ -19,7 +19,6 @@ import expo.modules.snapcutmedia.models.ExportAudioRequest
 import expo.modules.snapcutmedia.models.ExportPreflightRequest
 import expo.modules.snapcutmedia.models.GenerateWaveformRequest
 import expo.modules.snapcutmedia.models.ImportSourceRequest
-import expo.modules.snapcutmedia.models.ImportedSourceResult
 import expo.modules.snapcutmedia.models.InspectSourceRequest
 import expo.modules.snapcutmedia.models.LoadPreviewRequest
 import expo.modules.snapcutmedia.models.NativeOperation
@@ -164,7 +163,7 @@ class SnapCutMediaModule : Module() {
     AsyncFunction("importSource") Coroutine { request: ImportSourceRequest ->
       val stage = AtomicReference(ImportStage.INSPECTING)
       try {
-        withJob<ImportedSourceResult>(NativeOperation.IMPORT, request.jobId, request.generation) {
+        withJob<Map<String, Any?>>(NativeOperation.IMPORT, request.jobId, request.generation) {
           val coroutineJob = currentCoroutineContext().job
           val cancellation = cancellationCheck(
             NativeOperation.IMPORT,
@@ -178,7 +177,7 @@ class SnapCutMediaModule : Module() {
             mediaImporter().importSource(request, cancellation, hooks) { progress ->
               stage.set(progress.stage)
               emitImportProgress(request, progress)
-            }
+            }.toBridgeMap()
           }
         }
       } catch (error: SnapCutMediaException) {

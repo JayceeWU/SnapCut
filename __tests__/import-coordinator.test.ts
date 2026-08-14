@@ -284,6 +284,87 @@ describe('ImportCoordinator', () => {
     expect(repository.project.sources[0]?.privateAudioFileName).toBe('source.flac');
   });
 
+  it('accepts authoritative AAC output metadata normalized by Android remuxing', async () => {
+    const { media, repository, coordinator } = setup();
+    const outputFileUri = `file:///documents/SnapCut/staging/.import-job-1/sources/${SOURCE_IDS[0]}/source.m4a.partial`;
+    media.pickResults.push(picked());
+    media.importResults.push({
+      ...resultFor(outputFileUri),
+      durationMs: 920,
+      encodedBitrateBps: 192_000,
+      codecConfigFingerprint: 'c'.repeat(64),
+      encoderDelayFrames: null,
+      encoderPaddingFrames: null,
+    });
+
+    const outcome = await coordinator.importIntoProject(PROJECT_ID);
+
+    expect(outcome.status).toBe('imported');
+    expect(repository.project.sources[0]).toMatchObject({
+      durationMs: 920,
+      codecConfigFingerprint: 'c'.repeat(64),
+      encoderDelayFrames: null,
+      encoderPaddingFrames: null,
+    });
+  });
+
+  it('accepts Android 29 codec MIME and bit-depth normalization for FLAC', async () => {
+    const { media, repository, coordinator } = setup();
+    const flacInspection: SourceInspection = {
+      ...inspection,
+      sourceKind: 'flac',
+      codecMime: 'audio/flac',
+      pcmBitsPerSample: 24,
+      aacProfile: null,
+      codecConfigFingerprint: null,
+      encoderDelayFrames: null,
+      encoderPaddingFrames: null,
+    };
+    const outputFileUri = `file:///documents/SnapCut/staging/.import-job-1/sources/${SOURCE_IDS[0]}/source.flac.partial`;
+    media.pickResults.push(picked());
+    media.inspectResults.push(flacInspection);
+    media.importResults.push({
+      ...resultFor(outputFileUri, flacInspection),
+      codecMime: 'audio/raw',
+      pcmBitsPerSample: null,
+    });
+
+    const outcome = await coordinator.importIntoProject(PROJECT_ID);
+
+    expect(outcome.status).toBe('imported');
+    expect(repository.project.sources[0]).toMatchObject({
+      sourceKind: 'flac',
+      codecMime: 'audio/raw',
+      pcmBitsPerSample: null,
+    });
+  });
+
+  it.each([
+    ['sourceKind', { sourceKind: 'm4s-aac' as const }],
+    ['sampleRateHz', { sampleRateHz: 48_000 }],
+    ['channelCount', { channelCount: 1 as const }],
+    ['aacProfile', { aacProfile: 'he-aac-v1' as const }],
+  ])('rejects and safely diagnoses a real %s integrity mismatch', async (field, changes) => {
+    const onDiagnostic = jest.fn();
+    const { media, repository, coordinator } = setup(onDiagnostic);
+    const outputFileUri = `file:///documents/SnapCut/staging/.import-job-1/sources/${SOURCE_IDS[0]}/source.m4a.partial`;
+    media.pickResults.push(picked());
+    media.importResults.push({ ...resultFor(outputFileUri), ...changes });
+
+    const outcome = await coordinator.importIntoProject(PROJECT_ID);
+
+    expect(outcome).toMatchObject({ status: 'failed', failure: { code: 'INVALID_NATIVE_RESULT' } });
+    expect(repository.finalized).toHaveLength(0);
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'INVALID_NATIVE_RESULT',
+        contractFields: expect.stringContaining(field),
+      }),
+    );
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain('content://');
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain('Private song');
+  });
+
   it('maps a native failure, clears the task, and succeeds on the next attempt', async () => {
     const { media, repository, states, coordinator } = setup();
     media.pickResults.push(picked(), picked());

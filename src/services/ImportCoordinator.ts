@@ -151,7 +151,22 @@ interface ActiveImport {
 }
 
 class StaleImportOperationError extends Error {}
-class InvalidNativeResultError extends Error {}
+class InvalidNativeResultError extends Error {
+  constructor(readonly issuePaths: readonly string[]) {
+    super('The native import result failed stable integrity checks.');
+    this.name = 'InvalidNativeResultError';
+  }
+}
+
+const AAC_SOURCE_KINDS = new Set<SourceKind>(['video-extracted-aac', 'm4a', 'm4s-aac']);
+const COMPATIBLE_CODEC_MIMES: Readonly<Record<SourceKind, ReadonlySet<string>>> = {
+  'video-extracted-aac': new Set(['audio/mp4a-latm']),
+  m4a: new Set(['audio/mp4a-latm']),
+  'm4s-aac': new Set(['audio/mp4a-latm']),
+  mp3: new Set(['audio/mpeg', 'audio/mp3']),
+  flac: new Set(['audio/flac', 'audio/x-flac', 'audio/raw']),
+  wav: new Set(['audio/raw', 'audio/wav', 'audio/x-wav', 'audio/vnd.wave']),
+};
 
 function privateAudioFileName(sourceKind: SourceKind): string {
   switch (sourceKind) {
@@ -168,25 +183,50 @@ function privateAudioFileName(sourceKind: SourceKind): string {
   }
 }
 
-function inspectionMatchesResult(
+function importResultMismatchFields(
   inspection: SourceInspection,
   result: ImportResult,
   expectedOutputFileUri: string,
-): boolean {
-  return (
-    result.outputFileUri === expectedOutputFileUri &&
-    result.sourceKind === inspection.sourceKind &&
-    result.codecMime === inspection.codecMime &&
-    result.durationMs === inspection.durationMs &&
-    result.sampleRateHz === inspection.sampleRateHz &&
-    result.channelCount === inspection.channelCount &&
-    result.encodedBitrateBps === inspection.encodedBitrateBps &&
-    result.pcmBitsPerSample === inspection.pcmBitsPerSample &&
-    result.aacProfile === inspection.aacProfile &&
-    result.codecConfigFingerprint === inspection.codecConfigFingerprint &&
-    result.encoderDelayFrames === inspection.encoderDelayFrames &&
-    result.encoderPaddingFrames === inspection.encoderPaddingFrames
-  );
+): readonly string[] {
+  const fields: string[] = [];
+  if (result.outputFileUri !== expectedOutputFileUri) fields.push('outputFileUri');
+  if (result.sourceKind !== inspection.sourceKind) fields.push('sourceKind');
+  if (result.sampleRateHz !== inspection.sampleRateHz) fields.push('sampleRateHz');
+  if (result.channelCount !== inspection.channelCount) fields.push('channelCount');
+
+  const compatibleMimes = COMPATIBLE_CODEC_MIMES[inspection.sourceKind];
+  if (
+    !compatibleMimes.has(inspection.codecMime.toLowerCase()) ||
+    !compatibleMimes.has(result.codecMime.toLowerCase())
+  ) {
+    fields.push('codecMime');
+  }
+
+  if (AAC_SOURCE_KINDS.has(inspection.sourceKind)) {
+    if (result.aacProfile === null || result.aacProfile !== inspection.aacProfile) {
+      fields.push('aacProfile');
+    }
+    if (inspection.codecConfigFingerprint === null || result.codecConfigFingerprint === null) {
+      fields.push('codecConfigFingerprint');
+    }
+  } else if (result.aacProfile !== null || result.codecConfigFingerprint !== null) {
+    fields.push('codecConfigFingerprint');
+  }
+
+  return [...new Set(fields)];
+}
+
+function contractIssuePaths(error: unknown): readonly string[] {
+  if (error instanceof SnapCutMediaContractError || error instanceof InvalidNativeResultError) {
+    return error.issuePaths;
+  }
+  if (error instanceof z.ZodError) {
+    return [...new Set(error.issues.map((issue) => issue.path.join('.')).filter(Boolean))].slice(
+      0,
+      6,
+    );
+  }
+  return [];
 }
 
 /**
@@ -372,8 +412,9 @@ export class ImportCoordinator {
         await this.media.importSource(importRequest),
       ) as ImportResult;
       this.assertCurrent(context);
-      if (!inspectionMatchesResult(inspection, result, paths.outputFileUri)) {
-        throw new InvalidNativeResultError();
+      const mismatchFields = importResultMismatchFields(inspection, result, paths.outputFileUri);
+      if (mismatchFields.length > 0) {
+        throw new InvalidNativeResultError(mismatchFields);
       }
 
       context.stage = 'committing';
@@ -436,6 +477,7 @@ export class ImportCoordinator {
       context.stage = 'failed';
       context.fraction = null;
       this.publishFailure(context, failure);
+      const issuePaths = contractIssuePaths(terminalError);
       this.onDiagnostic?.({
         operation: 'import',
         projectId: context.projectId,
@@ -446,10 +488,7 @@ export class ImportCoordinator {
         code: failure.code,
         ...(context.nativeStage === undefined ? {} : { nativeStage: context.nativeStage }),
         ...(context.causeCategory === undefined ? {} : { causeCategory: context.causeCategory }),
-        ...(terminalError instanceof SnapCutMediaContractError &&
-        terminalError.issuePaths.length > 0
-          ? { contractFields: terminalError.issuePaths.join(',') }
-          : {}),
+        ...(issuePaths.length > 0 ? { contractFields: issuePaths.join(',') } : {}),
       });
       return { status: 'failed', failure };
     } finally {

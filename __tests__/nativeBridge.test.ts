@@ -110,6 +110,43 @@ describe('SnapCutMedia TypeScript boundary', () => {
     ).resolves.toMatchObject({ sourceKind: 'video-extracted-aac', aacProfile: 'aac-lc' });
   });
 
+  test('accepts the explicit primitive imported-source bridge map', async () => {
+    const requested = 'file:/data/user/0/com.snapcut.app/files/staging/output.partial';
+    const native = nativeModule({
+      importSource: async () => ({
+        outputFileUri: requested,
+        sourceKind: 'video-extracted-aac',
+        codecMime: 'audio/mp4a-latm',
+        durationMs: 12_301,
+        sampleRateHz: 48_000,
+        channelCount: 2,
+        encodedBitrateBps: 192_000,
+        pcmBitsPerSample: null,
+        aacProfile: 'aac-lc',
+        codecConfigFingerprint: 'b'.repeat(64),
+        encoderDelayFrames: null,
+        encoderPaddingFrames: null,
+        fileSizeBytes: 450,
+        privateAudioSha256: 'c'.repeat(64),
+      }),
+    });
+
+    await expect(
+      createSnapCutMediaClient(() => native).importSource({
+        jobId: 'job-1',
+        generation: 1,
+        sourceUri: 'content://provider/item',
+        outputFileUri: requested,
+        maxSourceBytes: 600 * 1024 * 1024,
+      }),
+    ).resolves.toMatchObject({
+      outputFileUri: requested,
+      sourceKind: 'video-extracted-aac',
+      aacProfile: 'aac-lc',
+      encoderDelayFrames: null,
+    });
+  });
+
   test('classifies malformed inspection results without retaining private values', async () => {
     const native = nativeModule({
       inspectSource: async () =>

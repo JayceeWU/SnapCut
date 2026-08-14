@@ -13,6 +13,7 @@ import expo.modules.snapcutmedia.exportmedia.SnapCutExportServices
 import expo.modules.snapcutmedia.jobs.NativeJobRegistry
 import expo.modules.snapcutmedia.jobs.NativeJobResource
 import expo.modules.snapcutmedia.importmedia.ImportProgress
+import expo.modules.snapcutmedia.importmedia.ImportStage
 import expo.modules.snapcutmedia.importmedia.MediaImportService
 import expo.modules.snapcutmedia.models.ExportAudioRequest
 import expo.modules.snapcutmedia.models.ExportPreflightRequest
@@ -161,21 +162,49 @@ class SnapCutMediaModule : Module() {
     }
 
     AsyncFunction("importSource") Coroutine { request: ImportSourceRequest ->
-      withJob<ImportedSourceResult>(NativeOperation.IMPORT, request.jobId, request.generation) {
-        val coroutineJob = currentCoroutineContext().job
-        val cancellation = cancellationCheck(
-          NativeOperation.IMPORT,
-          request.jobId,
-          request.generation,
-          coroutineJob,
-          SnapCutMediaError.IMPORT_CANCELLED
-        )
-        val hooks = resourceHooks(NativeOperation.IMPORT, request.jobId, request.generation)
-        withContext(Dispatchers.IO) {
-          mediaImporter().importSource(request, cancellation, hooks) { progress ->
-            emitImportProgress(request, progress)
+      val stage = AtomicReference(ImportStage.INSPECTING)
+      try {
+        withJob<ImportedSourceResult>(NativeOperation.IMPORT, request.jobId, request.generation) {
+          val coroutineJob = currentCoroutineContext().job
+          val cancellation = cancellationCheck(
+            NativeOperation.IMPORT,
+            request.jobId,
+            request.generation,
+            coroutineJob,
+            SnapCutMediaError.IMPORT_CANCELLED
+          )
+          val hooks = resourceHooks(NativeOperation.IMPORT, request.jobId, request.generation)
+          withContext(Dispatchers.IO) {
+            mediaImporter().importSource(request, cancellation, hooks) { progress ->
+              stage.set(progress.stage)
+              emitImportProgress(request, progress)
+            }
           }
         }
+      } catch (error: SnapCutMediaException) {
+        emitImportError(
+          request,
+          error.error,
+          safeImportNativeStage(error.technicalContext, stage.get()),
+          categoryFor(error.error)
+        )
+        throw error
+      } catch (_: LinkageError) {
+        emitImportError(
+          request,
+          SnapCutMediaError.NATIVE_FEATURE_UNAVAILABLE,
+          stage.get().value,
+          "linkage"
+        )
+        throw mediaError(SnapCutMediaError.NATIVE_FEATURE_UNAVAILABLE)
+      } catch (_: Exception) {
+        emitImportError(
+          request,
+          SnapCutMediaError.UNKNOWN_NATIVE_ERROR,
+          stage.get().value,
+          "native"
+        )
+        throw mediaError(SnapCutMediaError.UNKNOWN_NATIVE_ERROR)
       }
     }
 
@@ -481,6 +510,35 @@ class SnapCutMediaModule : Module() {
     )
   }
 
+  private fun emitImportError(
+    request: ImportSourceRequest,
+    error: SnapCutMediaError,
+    nativeStage: String,
+    causeCategory: String
+  ) {
+    sendEvent(
+      "onNativeError",
+      mapOf(
+        "jobId" to request.jobId,
+        "operation" to NativeOperation.IMPORT.value,
+        "sequence" to 1L,
+        "stage" to nativeStage,
+        "generation" to request.generation,
+        "code" to error.code,
+        "message" to error.safeMessage,
+        "nativeStage" to nativeStage,
+        "causeCategory" to causeCategory
+      )
+    )
+  }
+
+  private fun safeImportNativeStage(
+    technicalContext: String?,
+    fallback: ImportStage
+  ): String = technicalContext
+    ?.takeIf { it in SAFE_IMPORT_NATIVE_STAGES }
+    ?: fallback.value
+
   private fun categoryFor(error: SnapCutMediaError): String = when (error) {
     SnapCutMediaError.SOURCE_NOT_FOUND,
     SnapCutMediaError.SOURCE_PERMISSION_DENIED,
@@ -567,5 +625,14 @@ class SnapCutMediaModule : Module() {
   private companion object {
     const val MODULE_NAME = "SnapCutMedia"
     const val MODULE_VERSION = "1.0.0"
+    val SAFE_IMPORT_NATIVE_STAGES = setOf(
+      "verification_source_kind",
+      "verification_codec_mime",
+      "verification_sample_rate",
+      "verification_channel_count",
+      "verification_aac_profile",
+      "verification_codec_config",
+      "verification_duration"
+    )
   }
 }

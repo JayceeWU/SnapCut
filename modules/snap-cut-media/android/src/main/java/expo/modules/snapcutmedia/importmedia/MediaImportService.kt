@@ -25,7 +25,6 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.math.BigInteger
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.abs
 
 internal class MediaImportService(
   private val inspector: SourceInspector,
@@ -82,7 +81,7 @@ internal class MediaImportService(
           )
         )
         reporter.report(ImportStage.EXTRACTING_OR_COPYING, 0.0, 0L, session.actualSizeBytes, true)
-        when (inspected.inspection.sourceKind) {
+        val expectedOutputDurationMs = when (inspected.inspection.sourceKind) {
           SourceKind.VIDEO_EXTRACTED_AAC,
           SourceKind.M4A,
           SourceKind.M4S_AAC -> remuxAac(
@@ -96,14 +95,17 @@ internal class MediaImportService(
           )
           SourceKind.MP3,
           SourceKind.FLAC,
-          SourceKind.WAV -> copySource(
-            session,
-            output,
-            request.maxSourceBytes,
-            cancellation,
-            hooks,
-            reporter
-          )
+          SourceKind.WAV -> {
+            copySource(
+              session,
+              output,
+              request.maxSourceBytes,
+              cancellation,
+              hooks,
+              reporter
+            )
+            inspected.inspection.durationMs
+          }
         }
         cancellation.throwIfCancelled()
         reporter.report(ImportStage.VERIFYING, null, force = true)
@@ -113,7 +115,11 @@ internal class MediaImportService(
           cancellation,
           hooks
         )
-        verifyInspection(inspected.inspection, verified)
+        ImportInspectionVerifier.requireCompatible(
+          inspected.inspection,
+          verified,
+          expectedOutputDurationMs
+        )
         val outputSize = output.length().takeIf { it > 0L }
           ?: throw mediaError(SnapCutMediaError.IMPORT_VERIFICATION_FAILED)
         val hash = sha256(output, cancellation, hooks)
@@ -123,16 +129,16 @@ internal class MediaImportService(
         return ImportedSourceResult(
           outputFileUri = request.outputFileUri,
           sourceKind = source.sourceKind,
-          codecMime = source.codecMime,
-          durationMs = source.durationMs,
-          sampleRateHz = source.sampleRateHz,
-          channelCount = source.channelCount,
-          encodedBitrateBps = source.encodedBitrateBps,
-          pcmBitsPerSample = source.pcmBitsPerSample,
-          aacProfile = source.aacProfile,
-          codecConfigFingerprint = source.codecConfigFingerprint,
-          encoderDelayFrames = source.encoderDelayFrames,
-          encoderPaddingFrames = source.encoderPaddingFrames,
+          codecMime = verified.codecMime,
+          durationMs = verified.durationMs,
+          sampleRateHz = verified.sampleRateHz,
+          channelCount = verified.channelCount,
+          encodedBitrateBps = verified.encodedBitrateBps,
+          pcmBitsPerSample = verified.pcmBitsPerSample,
+          aacProfile = verified.aacProfile,
+          codecConfigFingerprint = verified.codecConfigFingerprint,
+          encoderDelayFrames = verified.encoderDelayFrames,
+          encoderPaddingFrames = verified.encoderPaddingFrames,
           fileSizeBytes = outputSize,
           privateAudioSha256 = hash
         )
@@ -182,7 +188,8 @@ internal class MediaImportService(
     cancellation: CancellationCheck,
     hooks: MediaResourceHooks,
     reporter: ImportProgressReporter
-  ) {
+  ): Long {
+    var outputDurationMs = -1L
     session.openExtractor().use { managed ->
       val extractor = managed.extractor
       extractor.selectTrack(trackIndex)
@@ -231,36 +238,15 @@ internal class MediaImportService(
         muxer.stop()
         started = false
         completed = true
+        outputDurationMs = (lastTimestampUs + 500L) / 1000L
       } finally {
         if (started) runCatching(muxer::stop)
         resource.close()
         if (!completed) runCatching { output.delete() }
       }
     }
-  }
-
-  private fun verifyInspection(before: SourceInspection, after: SourceInspection) {
-    val aac = before.sourceKind in setOf(
-      SourceKind.VIDEO_EXTRACTED_AAC,
-      SourceKind.M4A,
-      SourceKind.M4S_AAC
-    )
-    val durationToleranceMs = if (aac) {
-      maxOf(50L, (2048L * 1000L) / before.sampleRateHz)
-    } else {
-      2L
-    }
-    val compatible =
-      before.codecMime == after.codecMime &&
-        before.sampleRateHz == after.sampleRateHz &&
-        before.channelCount == after.channelCount &&
-        before.pcmBitsPerSample == after.pcmBitsPerSample &&
-        before.aacProfile == after.aacProfile &&
-        before.codecConfigFingerprint == after.codecConfigFingerprint &&
-        before.encoderDelayFrames == after.encoderDelayFrames &&
-        before.encoderPaddingFrames == after.encoderPaddingFrames &&
-        abs(before.durationMs - after.durationMs) <= durationToleranceMs
-    if (!compatible) throw mediaError(SnapCutMediaError.IMPORT_VERIFICATION_FAILED)
+    return outputDurationMs.takeIf { it >= 0L }
+      ?: throw mediaError(SnapCutMediaError.IMPORT_VERIFICATION_FAILED)
   }
 
   private fun measureTrackPayloadBytes(

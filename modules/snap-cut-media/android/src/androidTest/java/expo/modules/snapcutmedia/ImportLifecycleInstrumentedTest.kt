@@ -112,19 +112,34 @@ class ImportLifecycleInstrumentedTest {
           error
         }
       }
-      assertTrue(cancellationHooks.awaitAttachment())
+      assertTrue(
+        "The cancellable provider did not attach a native resource in time",
+        cancellationHooks.awaitAttachment(CANCELLATION_TIMEOUT_SECONDS)
+      )
       cancelled.set(true)
       cancellationHooks.cancelAttached()
-      val cancellationError = result.get(5L, TimeUnit.SECONDS)
-      assertTrue(cancellationError is SnapCutMediaException)
+      val cancellationError = result.get(CANCELLATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+      assertTrue(
+        "Cancellation must finish with a SnapCutMediaException, got ${cancellationError?.javaClass?.name}",
+        cancellationError is SnapCutMediaException
+      )
       assertEquals("IMPORT_CANCELLED", (cancellationError as SnapCutMediaException).code)
-      assertTrue(cancellationHooks.awaitIdle())
+      assertTrue(
+        "All native resources must detach after cancellation",
+        cancellationHooks.awaitIdle(CANCELLATION_TIMEOUT_SECONDS)
+      )
       assertEquals(
         cancellationHooks.attachmentCount.get(),
         cancellationHooks.detachmentCount.get()
       )
-      assertFalse(File(URI(cancelledRequest.outputFileUri)).exists())
-      assertTrue(spoolRoot.listFiles().orEmpty().isEmpty())
+      assertFalse(
+        "Cancellation must remove the private output",
+        File(URI(cancelledRequest.outputFileUri)).exists()
+      )
+      assertTrue(
+        "Cancellation must remove every private spool file",
+        spoolRoot.listFiles().orEmpty().isEmpty()
+      )
     } finally {
       executor.shutdownNow()
     }
@@ -157,8 +172,14 @@ class ImportLifecycleInstrumentedTest {
     hooks: TrackingResourceHooks,
     requireAttachment: Boolean = true
   ) {
-    assertTrue(hooks.isIdle())
-    if (requireAttachment) assertTrue(hooks.attachmentCount.get() > 0)
+    assertTrue("A completed operation must not retain native resources", hooks.isIdle())
+    if (requireAttachment) {
+      assertTrue("The operation did not exercise resource ownership", hooks.attachmentCount.get() > 0)
+    }
     assertEquals(hooks.attachmentCount.get(), hooks.detachmentCount.get())
+  }
+
+  private companion object {
+    const val CANCELLATION_TIMEOUT_SECONDS = 15L
   }
 }

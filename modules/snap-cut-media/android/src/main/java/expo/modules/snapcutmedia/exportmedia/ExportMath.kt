@@ -61,7 +61,7 @@ internal object ExportMath {
   private fun ceilDivide(value: BigInteger, divisor: BigInteger): BigInteger =
     value.add(divisor).subtract(BigInteger.ONE).divide(divisor)
 
-  private fun capped(value: BigInteger): Long = value.min(LONG_MAX).longValueExact()
+  private fun capped(value: BigInteger): Long = value.min(LONG_MAX).toLong()
 
   private val SUPPORTED_OUTPUT_RATES = setOf(32_000, 44_100, 48_000)
   private const val M4A_MINIMUM_OVERHEAD_BYTES = 64L * 1024L

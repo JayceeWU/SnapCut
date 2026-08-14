@@ -439,7 +439,7 @@ internal object ImportOutputEstimate {
       sampleTable,
       BigInteger.valueOf(MINIMUM_MUX_OVERHEAD_BYTES)
     )
-    return payload.add(overhead).min(LONG_MAX).longValueExact()
+    return payload.add(overhead).min(LONG_MAX).toLong()
   }
 
   private fun ceilDivide(value: BigInteger, divisor: BigInteger): BigInteger =

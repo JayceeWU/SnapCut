@@ -49,7 +49,7 @@ internal object ClipFrameMath {
     BigInteger.valueOf(left).multiply(BigInteger.valueOf(right))
       .add(BigInteger.valueOf(divisor - 1L))
       .divide(BigInteger.valueOf(divisor))
-      .longValueExact()
+      .toLong()
   }
 }
 

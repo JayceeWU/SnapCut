@@ -125,7 +125,7 @@ internal class CompletedDecodedOutputVerifier {
       .multiply(BigInteger.valueOf(1_000_000L))
       .add(BigInteger.valueOf(sampleRateHz.toLong() - 1L))
       .divide(BigInteger.valueOf(sampleRateHz.toLong()))
-      .longValueExact()
+      .toLong()
   }
 
   private fun ceilDivide(value: Long, divisor: Long): Long =

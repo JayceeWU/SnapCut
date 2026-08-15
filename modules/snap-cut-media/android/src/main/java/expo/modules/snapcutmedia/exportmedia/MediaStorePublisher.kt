@@ -57,20 +57,22 @@ internal class AndroidMediaStoreGateway(
   )
 
   override fun existingDisplayNames(): Set<String> {
-    val names = linkedSetOf<String>()
-    resolver.query(
-      collection,
-      arrayOf(MediaStore.Audio.Media.DISPLAY_NAME),
-      "${MediaStore.Audio.Media.RELATIVE_PATH}=?",
-      arrayOf(RELATIVE_PATH_WITH_SEPARATOR),
-      null
-    )?.use { cursor ->
-      val column = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
-      while (column >= 0 && cursor.moveToNext()) {
-        if (!cursor.isNull(column)) cursor.getString(column)?.let(names::add)
+    return runCatching {
+      val names = linkedSetOf<String>()
+      resolver.query(
+        collection,
+        arrayOf(MediaStore.Audio.Media.DISPLAY_NAME),
+        "${MediaStore.Audio.Media.RELATIVE_PATH}=?",
+        arrayOf(RELATIVE_PATH_WITH_SEPARATOR),
+        null
+      )?.use { cursor ->
+        val column = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
+        while (column >= 0 && cursor.moveToNext()) {
+          if (!cursor.isNull(column)) cursor.getString(column)?.let(names::add)
+        }
       }
-    }
-    return names
+      names
+    }.getOrDefault(emptySet())
   }
 
   override fun insertPending(displayName: String, mimeType: String): String {
@@ -90,38 +92,82 @@ internal class AndroidMediaStoreGateway(
 
   override fun publish(contentUri: String): Boolean {
     val values = ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) }
-    return resolver.update(Uri.parse(contentUri), values, null, null) == 1
+    val uri = Uri.parse(contentUri)
+    if (resolver.update(uri, values, null, null) > 0) return true
+
+    // A few Android 10 providers report an update count of zero even though the row was
+    // published. Confirm the state instead of deleting a successfully committed export.
+    return runCatching {
+      resolver.query(
+        uri,
+        arrayOf(MediaStore.Audio.Media.IS_PENDING),
+        null,
+        null,
+        null
+      )?.use { cursor ->
+        val column = cursor.getColumnIndex(MediaStore.Audio.Media.IS_PENDING)
+        column >= 0 && cursor.moveToFirst() && cursor.getInt(column) == 0
+      } == true
+    }.getOrDefault(false)
   }
 
   override fun readDisplayName(contentUri: String): String? {
-    var displayName: String? = null
-    resolver.query(
-      Uri.parse(contentUri),
-      arrayOf(MediaStore.Audio.Media.DISPLAY_NAME),
-      null,
-      null,
-      null
-    )?.use { cursor ->
-      val column = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
-      if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) {
-        displayName = cursor.getString(column)
+    return runCatching {
+      var displayName: String? = null
+      resolver.query(
+        Uri.parse(contentUri),
+        arrayOf(MediaStore.Audio.Media.DISPLAY_NAME),
+        null,
+        null,
+        null
+      )?.use { cursor ->
+        val column = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
+        if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) {
+          displayName = cursor.getString(column)
+        }
       }
-    }
-    return displayName
+      displayName
+    }.getOrNull()
   }
 
   override fun readSize(contentUri: String): Long? {
+    val uri = Uri.parse(contentUri)
+
+    // MediaStore.SIZE may lag behind the bytes on Android 10, especially on vendor providers.
+    // Prefer the actual file descriptor, then count the row's bytes while it is still pending.
+    val descriptorSize = runCatching {
+      resolver.openFileDescriptor(uri, "r")?.use { descriptor -> descriptor.statSize }
+    }.getOrNull()?.takeIf { it > 0L }
+    if (descriptorSize != null) return descriptorSize
+
+    val streamedSize = runCatching {
+      resolver.openInputStream(uri)?.use { input ->
+        val buffer = ByteArray(SIZE_BUFFER_BYTES)
+        var total = 0L
+        while (true) {
+          val read = input.read(buffer)
+          if (read < 0) break
+          if (read == 0) continue
+          total = Math.addExact(total, read.toLong())
+        }
+        total
+      }
+    }.getOrNull()?.takeIf { it > 0L }
+    if (streamedSize != null) return streamedSize
+
     var size: Long? = null
-    resolver.query(
-      Uri.parse(contentUri),
-      arrayOf(MediaStore.Audio.Media.SIZE),
-      null,
-      null,
-      null
-    )?.use { cursor ->
-      val column = cursor.getColumnIndex(MediaStore.Audio.Media.SIZE)
-      if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) {
-        size = cursor.getLong(column).takeIf { it > 0L }
+    runCatching {
+      resolver.query(
+        uri,
+        arrayOf(MediaStore.Audio.Media.SIZE),
+        null,
+        null,
+        null
+      )?.use { cursor ->
+        val column = cursor.getColumnIndex(MediaStore.Audio.Media.SIZE)
+        if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) {
+          size = cursor.getLong(column).takeIf { it > 0L }
+        }
       }
     }
     return size
@@ -132,6 +178,7 @@ internal class AndroidMediaStoreGateway(
   }
 
   private companion object {
+    const val SIZE_BUFFER_BYTES = 64 * 1024
     val RELATIVE_PATH: String = Environment.DIRECTORY_MUSIC + "/SnapCut"
     val RELATIVE_PATH_WITH_SEPARATOR: String = "$RELATIVE_PATH/"
   }

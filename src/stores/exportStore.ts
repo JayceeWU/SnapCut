@@ -73,15 +73,21 @@ export const useExportStore = create<ExportStoreState>((set) => ({
       error: null,
     }),
 
-  preflightReady: (preflight) =>
+  preflightReady: (preflight) => {
+    const visibleFormats = preflight.formats.filter(({ format }) => format !== 'flac');
+    const preferred = visibleFormats.find(
+      ({ available, format }) => available && format === preflight.preferredFormat,
+    );
+    const fallback = visibleFormats.find(({ available }) => available);
     set({
       status: 'ready',
       preflight,
-      selectedFormat: preflight.preferredFormat,
+      selectedFormat: preferred?.format ?? fallback?.format ?? null,
       stage: null,
       progress: null,
       error: null,
-    }),
+    });
+  },
 
   selectFormat: (selectedFormat) => set({ selectedFormat }),
   setDisplayName: (displayNameWithoutExtension) => set({ displayNameWithoutExtension }),

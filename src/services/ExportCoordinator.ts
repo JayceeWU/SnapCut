@@ -11,7 +11,7 @@ import {
   type SnapCutExportRecord,
   type SnapCutProject,
 } from '@/domain';
-import SnapCutMedia from '@/native/SnapCutMedia';
+import SnapCutMedia, { SnapCutMediaContractError } from '@/native/SnapCutMedia';
 import type {
   ExportAudioResult,
   NativeErrorEvent,
@@ -70,6 +70,10 @@ export interface ExportDiagnostic {
   generation: number;
   stage: string;
   code: string;
+  contractBoundary?: string;
+  contractFields?: string;
+  nativeStage?: string;
+  causeCategory?: string;
 }
 
 interface ActiveJob {
@@ -154,7 +158,8 @@ export class ExportCoordinator {
         async () => {
           if (!this.isCurrent(active, token)) throw new SupersededExportOperationError();
           return this.media.preflightExport({
-            ...active,
+            jobId: active.jobId,
+            generation: active.generation,
             projectId: project.id,
             clips: this.nativeClips(project),
           });
@@ -167,7 +172,13 @@ export class ExportCoordinator {
       if (!this.isCurrent(active, token)) return;
       this.active = null;
       this.recordFailure(active, 'preflight', error);
-      useExportStore.getState().fail(copy.export.preflightError);
+      useExportStore
+        .getState()
+        .fail(
+          isOutdatedNativePreflight(error)
+            ? copy.export.nativeUpdateRequired
+            : copy.export.preflightError,
+        );
       throw error;
     }
   }
@@ -181,6 +192,9 @@ export class ExportCoordinator {
     const selectedFormat = state.selectedFormat;
     if (!preflight || !selectedFormat || state.projectId !== project.id) {
       throw new Error('Export preflight is not ready.');
+    }
+    if (selectedFormat === 'flac') {
+      throw new Error('FLAC export is not available.');
     }
     const format = preflight.formats.find((candidate) => candidate.format === selectedFormat);
     if (!format?.available || format.sampleRateHz === null || format.channelCount === null) {
@@ -201,7 +215,8 @@ export class ExportCoordinator {
         async () => {
           if (!this.isCurrent(active, token)) throw new SupersededExportOperationError();
           return this.media.exportAudio({
-            ...active,
+            jobId: active.jobId,
+            generation: active.generation,
             projectId: project.id,
             format: selectedFormat,
             displayNameWithoutExtension,
@@ -323,6 +338,9 @@ export class ExportCoordinator {
   }
 
   private recordFailure(active: ActiveJob, stage: string, error: unknown): void {
+    const contract = error instanceof SnapCutMediaContractError ? error : null;
+    const nativeStage = safeStringField(error, 'nativeStage');
+    const causeCategory = safeStringField(error, 'causeCategory');
     this.onDiagnostic({
       operation: active.operation,
       projectId: active.projectId,
@@ -333,6 +351,10 @@ export class ExportCoordinator {
         error,
         active.operation === 'preflight' ? 'EXPORT_PREFLIGHT_FAILED' : 'UNKNOWN_NATIVE_ERROR',
       ),
+      ...(contract === null ? {} : { contractBoundary: contract.boundary }),
+      ...(contract?.issuePaths.length ? { contractFields: contract.issuePaths.join(',') } : {}),
+      ...(nativeStage === null ? {} : { nativeStage }),
+      ...(causeCategory === null ? {} : { causeCategory }),
     });
   }
 
@@ -357,6 +379,22 @@ function errorCode(error: unknown, fallback: string): string {
     typeof error.code === 'string'
     ? error.code
     : fallback;
+}
+
+function safeStringField(error: unknown, field: string): string | null {
+  if (typeof error !== 'object' || error === null || !(field in error)) return null;
+  const value = Reflect.get(error, field);
+  return typeof value === 'string' && value.length > 0 && value.length <= 40 ? value : null;
+}
+
+function isOutdatedNativePreflight(error: unknown): boolean {
+  if (!(error instanceof SnapCutMediaContractError) || error.boundary !== 'preflightExport') {
+    return false;
+  }
+  return error.issuePaths.some(
+    (path) =>
+      path === 'contractVersion' || path === 'mayClip' || /^formats\.\d+\.mode$/u.test(path),
+  );
 }
 
 export const exportCoordinator = new ExportCoordinator();

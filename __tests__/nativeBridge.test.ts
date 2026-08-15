@@ -318,6 +318,71 @@ describe('SnapCutMedia TypeScript boundary', () => {
     ).rejects.toThrow(SnapCutMediaContractError);
   });
 
+  test('identifies a stale native preflight bridge without exposing values', async () => {
+    const preflightExport = jest.fn(async () => ({
+      preferredFormat: 'm4a',
+      m4aPlan: {
+        planVersion: 1,
+        planId: '11111111-1111-4111-8111-111111111114',
+        createdAt: '2026-08-15T00:00:00.000Z',
+        eligible: false,
+        reasons: ['AAC stream copy is unavailable.'],
+        codecConfigFingerprint: null,
+        sampleRateHz: null,
+        channelCount: null,
+        maxBoundaryAdjustmentMs: 0,
+        estimatedOutputBytes: null,
+        sourceSnapshots: [],
+        clips: [],
+      },
+      formats: [
+        {
+          format: 'm4a',
+          available: true,
+          reasons: [],
+          estimatedOutputBytes: 1,
+          requiredFreeBytes: 1,
+          sampleRateHz: 48_000,
+          channelCount: 2,
+        },
+      ],
+    }));
+    const client = createSnapCutMediaClient(() =>
+      nativeModule({ preflightExport: preflightExport as never }),
+    );
+    const error = await client
+      .preflightExport({
+        jobId: 'job-1',
+        generation: 1,
+        projectId: 'project-1',
+        clips: [
+          {
+            clipId: 'clip-1',
+            sourceId: 'source-1',
+            audioFileUri: 'file:///private/source.m4a',
+            startMs: 0,
+            endMs: 1_000,
+            trackId: 'track-1',
+            timelineStartMs: 0,
+            gain: 1,
+            fadeInMs: 0,
+            fadeOutMs: 0,
+          },
+        ],
+      })
+      .catch((value: unknown) => value);
+
+    expect(error).toBeInstanceOf(SnapCutMediaContractError);
+    expect(error).toMatchObject({
+      boundary: 'preflightExport',
+      code: 'INVALID_NATIVE_RESULT',
+      issuePaths: expect.arrayContaining(['contractVersion']),
+    });
+    expect(JSON.stringify((error as SnapCutMediaContractError).issuePaths)).not.toContain(
+      'file://',
+    );
+  });
+
   test('accepts the explicit AAC re-encode request and 160 kbps mono result', async () => {
     const exportAudio = jest.fn(async () => ({
       format: 'm4a' as const,

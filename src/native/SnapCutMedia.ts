@@ -334,10 +334,10 @@ export class SnapCutMediaContractError extends Error {
   readonly issuePaths: readonly string[];
 
   constructor(
-    message: string,
+    readonly boundary: string,
     readonly cause?: unknown,
   ) {
-    super(message);
+    super(`${boundary} violated the SnapCut native contract`);
     this.name = 'SnapCutMediaContractError';
     this.issuePaths =
       cause instanceof z.ZodError
@@ -358,10 +358,7 @@ export function isSnapCutMediaErrorCode(value: unknown): value is SnapCutMediaEr
 function parseNative<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
   const result = schema.safeParse(value);
   if (!result.success) {
-    throw new SnapCutMediaContractError(
-      `${label} violated the SnapCut native contract`,
-      result.error,
-    );
+    throw new SnapCutMediaContractError(label, result.error);
   }
   return result.data;
 }

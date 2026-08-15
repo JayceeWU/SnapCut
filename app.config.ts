@@ -15,7 +15,7 @@ const config: ExpoConfig = {
   },
   android: {
     package: 'com.snapcut.app',
-    versionCode: 1,
+    versionCode: 3,
     adaptiveIcon: {
       foregroundImage: './assets/images/snapcut-adaptive-foreground.png',
       backgroundColor: '#120A24',

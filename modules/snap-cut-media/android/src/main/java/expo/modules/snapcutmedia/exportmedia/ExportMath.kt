@@ -4,6 +4,9 @@ import java.math.BigInteger
 
 internal object ExportMath {
   private val LONG_MAX = BigInteger.valueOf(Long.MAX_VALUE)
+  // BigInteger.TWO was added in Java 9 but is absent from Android 29's
+  // java.math.BigInteger. Keep this boundary compatible with minSdk 29.
+  private val TWO = BigInteger.valueOf(2L)
   private val ONE_HUNDRED = BigInteger.valueOf(100L)
   private val ONE_THOUSAND = BigInteger.valueOf(1000L)
 
@@ -21,7 +24,7 @@ internal object ExportMath {
 
   fun estimateM4aBytes(payloadBytes: Long): Long {
     require(payloadBytes > 0L)
-    val percentage = ceilDivide(BigInteger.valueOf(payloadBytes).multiply(BigInteger.TWO), ONE_HUNDRED)
+    val percentage = ceilDivide(BigInteger.valueOf(payloadBytes).multiply(TWO), ONE_HUNDRED)
     val overhead = percentage.max(BigInteger.valueOf(M4A_MINIMUM_OVERHEAD_BYTES))
     return capped(BigInteger.valueOf(payloadBytes).add(overhead))
   }

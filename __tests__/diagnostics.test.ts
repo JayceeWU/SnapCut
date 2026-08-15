@@ -50,4 +50,21 @@ describe('bounded diagnostic privacy', () => {
       repairIssues: 'SOURCE_RELATION_MISMATCH',
     });
   });
+
+  it('retains safe native contract labels without retaining media values', () => {
+    expect(
+      sanitizeDiagnosticFields({
+        operation: 'preflight',
+        code: 'INVALID_NATIVE_RESULT',
+        contractBoundary: 'preflightExport',
+        contractFields: 'contractVersion,formats.0.mode',
+        uri: 'file:///private/source.m4a',
+      } as never),
+    ).toEqual({
+      operation: 'preflight',
+      code: 'INVALID_NATIVE_RESULT',
+      contractBoundary: 'preflightExport',
+      contractFields: 'contractVersion,formats.0.mode',
+    });
+  });
 });

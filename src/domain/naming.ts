@@ -7,6 +7,7 @@ import { DomainError } from './errors';
 import { unicodeCodePointLength } from '../utils/unicode';
 
 const PATH_OR_CONTROL_CHARACTER = /[\u0000-\u001f\u007f/\\:*?"<>|]/u;
+const PATH_OR_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f/\\:*?"<>|]/gu;
 const MANAGED_EXPORT_EXTENSION = /\.(?:m4a|flac|mp3)$/iu;
 
 export function isValidProjectName(value: string): boolean {
@@ -71,19 +72,18 @@ export function createDefaultProjectName(at: Date): string {
 }
 
 export function createDefaultExportBaseName(projectName: string, at: Date): string {
-  const normalizedProjectName = normalizeProjectName(projectName);
-  if (Number.isNaN(at.getTime())) {
-    throw new DomainError('INVALID_EXPORT_NAME', 'Export date must be valid');
-  }
-
-  const datePart = `${at.getFullYear()}${pad2(at.getMonth() + 1)}${pad2(at.getDate())}`;
-  const timePart = `${pad2(at.getHours())}${pad2(at.getMinutes())}${pad2(at.getSeconds())}`;
-  const suffix = ` - ${datePart}-${timePart}`;
-  const maximumProjectLength = MAX_EXPORT_BASENAME_CODE_POINTS - unicodeCodePointLength(suffix);
-  const shortenedProjectName = Array.from(normalizedProjectName)
-    .slice(0, maximumProjectLength)
+  const trimmedProjectName = projectName.trim();
+  const projectBaseName =
+    trimmedProjectName.length > 0 ? trimmedProjectName : createDefaultProjectName(at);
+  const withoutManagedExtension = projectBaseName.replace(
+    MANAGED_EXPORT_EXTENSION,
+    (extension) => `-${extension.slice(1)}`,
+  );
+  const safeBaseName = Array.from(withoutManagedExtension.replace(PATH_OR_CONTROL_CHARACTERS, '-'))
+    .slice(0, MAX_EXPORT_BASENAME_CODE_POINTS)
     .join('')
-    .trimEnd();
+    .trim()
+    .replace(/^\.{1,2}$/u, '-');
 
-  return validateExportBaseName(`${shortenedProjectName}${suffix}`);
+  return validateExportBaseName(safeBaseName);
 }

@@ -6,6 +6,11 @@ import org.junit.Test
 
 class ExportMathTest {
   @Test
+  fun `M4A estimate uses Android 29 compatible arithmetic`() {
+    assertEquals(1_065_536L, ExportMath.estimateM4aBytes(1_000_000L))
+  }
+
+  @Test
   fun `decoded rate and channel policy follows the export contract`() {
     assertEquals(32_000, ExportMath.outputSampleRate(listOf(32_000, 32_000)))
     assertEquals(44_100, ExportMath.outputSampleRate(listOf(22_050, 44_100)))

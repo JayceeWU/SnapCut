@@ -3,6 +3,7 @@ import {
   addSource,
   buildClipTimeline,
   compositionDurationMs,
+  createDefaultExportBaseName,
   createProject,
   deleteClip,
   DomainError,
@@ -29,6 +30,28 @@ const SOURCE_B_ID = '33333333-3333-4333-8333-333333333333';
 const CLIP_A_ID = '44444444-4444-4444-8444-444444444444';
 const CLIP_B_ID = '55555555-5555-4555-8555-555555555555';
 const NOW = '2026-08-14T12:00:00.000Z';
+
+describe('export naming', () => {
+  const localDate = new Date(2026, 7, 15, 14, 29, 48);
+
+  it('uses a named project verbatim without appending a timestamp', () => {
+    expect(createDefaultExportBaseName('月亮代表我的心2', localDate)).toBe('月亮代表我的心2');
+  });
+
+  it('keeps an automatically generated time project name unchanged', () => {
+    expect(createDefaultExportBaseName('2026-08-15 14-29-48', localDate)).toBe(
+      '2026-08-15 14-29-48',
+    );
+  });
+
+  it('uses a local time project name only when the name is blank', () => {
+    expect(createDefaultExportBaseName('   ', localDate)).toBe('2026-08-15 14-29-48');
+  });
+
+  it('replaces Android-unsafe filename characters and managed extensions', () => {
+    expect(createDefaultExportBaseName('Mix/Take:1?.m4a', localDate)).toBe('Mix-Take-1--m4a');
+  });
+});
 
 function source(overrides: Partial<SnapCutSource> = {}): SnapCutSource {
   return {

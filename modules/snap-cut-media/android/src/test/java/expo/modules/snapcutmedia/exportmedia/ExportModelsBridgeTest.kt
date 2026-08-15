@@ -39,7 +39,11 @@ class ExportModelsBridgeTest {
       mayClip = true
     ).toBridgeMap()
 
-    assertEquals(setOf("preferredFormat", "m4aPlan", "formats", "mayClip"), bridge.keys)
+    assertEquals(
+      setOf("contractVersion", "preferredFormat", "m4aPlan", "formats", "mayClip"),
+      bridge.keys
+    )
+    assertEquals(1, bridge["contractVersion"])
     assertEquals("aac-lossy-encode", (bridge["formats"] as List<*>).single().let {
       (it as Map<*, *>)["mode"]
     })

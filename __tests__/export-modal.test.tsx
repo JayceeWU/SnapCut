@@ -33,6 +33,7 @@ describe('ExportModal', () => {
         12_345,
       );
     useExportStore.getState().preflightReady({
+      contractVersion: 1,
       preferredFormat: 'flac',
       mayClip: false,
       m4aPlan: unavailablePlan,
@@ -76,7 +77,6 @@ describe('ExportModal', () => {
         onClose={jest.fn()}
         onExport={onExport}
         onRetry={jest.fn()}
-        onShare={jest.fn()}
         visible
       />,
     );
@@ -84,13 +84,15 @@ describe('ExportModal', () => {
     expect(screen.getByText('AAC stream copy is unavailable for this composition.')).toBeTruthy();
     expect(screen.getByText(copy.export.compositionDuration('0:12'))).toBeTruthy();
     expect(screen.getByRole('radio', { name: copy.export.m4a })).toBeDisabled();
+    expect(screen.queryByRole('radio', { name: copy.export.flac })).toBeNull();
+    expect(useExportStore.getState().selectedFormat).toBe('mp3');
     await fireEvent.press(screen.getByRole('radio', { name: copy.export.mp3 }));
     expect(useExportStore.getState().selectedFormat).toBe('mp3');
     await fireEvent.press(screen.getByRole('button', { name: copy.export.startAction }));
     expect(onExport).toHaveBeenCalledTimes(1);
   }, 15_000);
 
-  it('discloses M4A access-unit adjustment and the FLAC source-quality caveat', async () => {
+  it('keeps format cards compact without technical details or codec explanations', async () => {
     useExportStore
       .getState()
       .beginPreflight(
@@ -99,6 +101,7 @@ describe('ExportModal', () => {
         12_345,
       );
     useExportStore.getState().preflightReady({
+      contractVersion: 1,
       preferredFormat: 'm4a',
       mayClip: true,
       m4aPlan: {
@@ -151,14 +154,17 @@ describe('ExportModal', () => {
         onClose={jest.fn()}
         onExport={jest.fn()}
         onRetry={jest.fn()}
-        onShare={jest.fn()}
         visible
       />,
     );
 
-    expect(screen.getByText(copy.export.m4aBoundaryAdjustment(12))).toBeTruthy();
     expect(screen.getByText(copy.export.mixClippingWarning)).toBeTruthy();
-    expect(screen.getByText(copy.export.flacSourceCaveat)).toBeTruthy();
+    expect(screen.getByText(copy.export.estimatedSize('391 KB'))).toBeTruthy();
+    expect(screen.getByText(copy.export.estimatedSize('488 KB'))).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: copy.export.flac })).toBeNull();
+    expect(screen.queryByText(/48,000 Hz/u)).toBeNull();
+    expect(screen.queryByText(/Cut points will be adjusted/u)).toBeNull();
+    expect(screen.queryByText(/FLAC preserves the exported PCM/u)).toBeNull();
   });
 
   it('shows the saved location, actual duration, and M4A boundary adjustment on success', async () => {
@@ -183,7 +189,6 @@ describe('ExportModal', () => {
         onClose={jest.fn()}
         onExport={jest.fn()}
         onRetry={jest.fn()}
-        onShare={jest.fn()}
         visible
       />,
     );
@@ -191,5 +196,7 @@ describe('ExportModal', () => {
     expect(screen.getByText(copy.export.successMessage('Purple export.m4a'))).toBeTruthy();
     expect(screen.getByText(copy.export.successDuration('0:12'))).toBeTruthy();
     expect(screen.getByText(copy.export.successBoundaryAdjustment(12))).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+    expect(screen.getByRole('button', { name: copy.export.closeAction })).toBeTruthy();
   });
 });

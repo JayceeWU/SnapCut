@@ -802,6 +802,7 @@ export const exportFormatAvailabilitySchema = z
 
 export const exportPreflightResultSchema = z
   .object({
+    contractVersion: z.literal(1),
     preferredFormat: z.enum(['m4a', 'flac']),
     m4aPlan: m4aExportPlanSchema,
     formats: z.array(exportFormatAvailabilitySchema).length(3),

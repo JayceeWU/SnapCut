@@ -33,13 +33,9 @@ internal class SnapCutExportServices(
     projectRoots,
     planRegistry,
     codecCapabilities = { outputRate, outputChannels ->
-      val buildInfo = NativeCodecBridge.getBuildInfo()
-      ExportPreflightService.conservativeCodecCapabilities(
-        bridgeLoaded = buildInfo.bridgeLoaded,
-        flacAvailable = buildInfo.flac.available,
-        mp3Available = buildInfo.lame.available,
-        resamplerAvailable = buildInfo.libsamplerate.available,
-        aacAvailable = AacCompositionEncoder.isAvailable(outputRate, outputChannels)
+      probeCodecCapabilities(
+        buildInfo = NativeCodecBridge::getBuildInfo,
+        aacAvailable = { AacCompositionEncoder.isAvailable(outputRate, outputChannels) }
       )
     }
   )
@@ -55,12 +51,14 @@ internal class SnapCutExportServices(
     request: ExportPreflightRequest,
     cancellation: CancellationCheck,
     hooks: MediaResourceHooks,
-    progressSink: (ExportProgress) -> Unit
+    progressSink: (ExportProgress) -> Unit,
+    nativeStageSink: (ExportPreflightNativeStage) -> Unit = {}
   ): Map<String, Any?> = preflight.preflight(
     request,
     cancellation,
     hooks,
-    progressSink
+    progressSink,
+    nativeStageSink
   ).toBridgeMap()
 
   fun export(
@@ -103,6 +101,23 @@ internal class SnapCutExportServices(
     planRegistry.clear()
   }
 
+  internal companion object {
+    fun probeCodecCapabilities(
+      buildInfo: () -> expo.modules.snapcutmedia.codec.NativeCodecBuildInfo,
+      aacAvailable: () -> Boolean
+    ): ExportCodecCapabilities {
+      val info = runCatching(buildInfo).getOrNull()
+      val aac = runCatching(aacAvailable).getOrDefault(false)
+      return ExportPreflightService.conservativeCodecCapabilities(
+        bridgeLoaded = info?.bridgeLoaded == true,
+        flacAvailable = info?.flac?.available == true,
+        mp3Available = info?.lame?.available == true,
+        resamplerAvailable = info?.libsamplerate?.available == true,
+        aacAvailable = aac
+      )
+    }
+  }
+
   private fun exportDecoded(
     request: ExportAudioRequest,
     cancellation: CancellationCheck,
@@ -130,7 +145,11 @@ internal class SnapCutExportServices(
       cancellation.throwIfCancelled()
       jobDirectory = ExportFileAccess.createJobDirectory(stagingRoot, request.jobId)
       val extension = ExportNaming.specification(request.format).extension
-      val stagingFile = File(jobDirectory, "composition$extension")
+      val stagingFile = ExportFileAccess.createJobOutputFile(
+        stagingRoot,
+        jobDirectory,
+        "composition$extension"
+      )
       val literalOutputFileUri = stagingFile.toURI().toString()
       val staged = decoded.exportToStaging(
         request,

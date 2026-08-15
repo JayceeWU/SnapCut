@@ -1,6 +1,10 @@
 import type { AppStateStatus } from 'react-native';
 
-import type { ExportPreflightResult, SnapCutProject } from '@/domain';
+import {
+  exportPreflightResultSchema,
+  type ExportPreflightResult,
+  type SnapCutProject,
+} from '@/domain';
 import type {
   ExportAudioRequest,
   ExportAudioResult,
@@ -9,6 +13,7 @@ import type {
   NativeEventName,
   ProgressEvent,
 } from '@/native';
+import { SnapCutMediaContractError } from '@/native/SnapCutMedia';
 import { ExportCoordinator, type ExportAppStatePort, type ExportMediaPort } from '@/services';
 import { HeavyMediaTaskQueue } from '@/services/HeavyMediaTaskQueue';
 import { useExportStore } from '@/stores';
@@ -68,6 +73,7 @@ function project(): SnapCutProject {
 
 function preflight(): ExportPreflightResult {
   return {
+    contractVersion: 1,
     preferredFormat: 'm4a',
     mayClip: false,
     m4aPlan: {
@@ -239,6 +245,9 @@ describe('ExportCoordinator', () => {
         ],
       }),
     );
+    expect(Object.keys(native.preflightExport.mock.calls[0]![0]).sort()).toEqual(
+      ['clips', 'generation', 'jobId', 'projectId'].sort(),
+    );
     expect(useExportStore.getState()).toMatchObject({
       status: 'ready',
       selectedFormat: 'm4a',
@@ -254,6 +263,19 @@ describe('ExportCoordinator', () => {
         outputChannelCount: null,
         m4aPlan: preflight().m4aPlan,
       }),
+    );
+    expect(Object.keys(native.exportAudio.mock.calls[0]![0]).sort()).toEqual(
+      [
+        'clips',
+        'displayNameWithoutExtension',
+        'format',
+        'generation',
+        'jobId',
+        'm4aPlan',
+        'outputChannelCount',
+        'outputSampleRateHz',
+        'projectId',
+      ].sort(),
     );
     expect(record).toEqual({ ...exportResult, exportedAt: '2026-08-12T21:00:00.000Z' });
     expect(releaseProject).toHaveBeenCalledTimes(2);
@@ -473,6 +495,8 @@ describe('ExportCoordinator', () => {
       generation: 2,
       code: 'M4A_MUX_FAILED',
       message: 'private native detail',
+      nativeStage: 'encoding',
+      causeCategory: 'native',
       format: 'm4a',
     });
     expect(useExportStore.getState().status).toBe('failed');
@@ -489,7 +513,47 @@ describe('ExportCoordinator', () => {
       generation: 2,
       stage: 'encoding',
       code: 'M4A_MUX_FAILED',
+      nativeStage: 'encoding',
+      causeCategory: 'native',
     });
     expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain('private native detail');
+  });
+
+  it('explains a stale installed native preflight and records only contract field paths', async () => {
+    const native = bridge();
+    const oldResponse = preflight() as unknown as Record<string, unknown>;
+    delete oldResponse.contractVersion;
+    delete oldResponse.mayClip;
+    oldResponse.formats = preflight().formats.map(({ mode: _mode, ...format }) => format);
+    const parsed = exportPreflightResultSchema.safeParse(oldResponse);
+    if (parsed.success) throw new Error('Expected the old preflight bridge to be invalid.');
+    const contractError = new SnapCutMediaContractError('preflightExport', parsed.error);
+    const staleClient: ExportMediaPort = {
+      ...native.media,
+      preflightExport: async () => Promise.reject(contractError),
+    };
+    const onDiagnostic = jest.fn();
+    const coordinator = new ExportCoordinator({
+      media: staleClient,
+      sourceResolver: { resolveSourceAudioUri: () => 'file:///private/source.m4a' },
+      preview: { releaseProject: async () => undefined },
+      appState: new FakeAppState(),
+      idFactory: () => 'stale-preflight-job',
+      onDiagnostic,
+    });
+
+    await expect(coordinator.prepare(project())).rejects.toBeInstanceOf(SnapCutMediaContractError);
+    expect(useExportStore.getState()).toMatchObject({
+      status: 'failed',
+      error: expect.stringContaining('Reinstall the latest Debug APK'),
+    });
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'INVALID_NATIVE_RESULT',
+        contractBoundary: 'preflightExport',
+        contractFields: expect.stringContaining('mayClip'),
+      }),
+    );
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain('file:///private');
   });
 });

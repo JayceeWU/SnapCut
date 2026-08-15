@@ -83,23 +83,16 @@ export const copy = {
     formatLabel: 'Format',
     compositionDuration: (value: string) => `Composition duration: ${value}`,
     estimatedSize: (value: string) => `Estimated size: ${value}`,
-    sampleRate: (value: number) => `${value.toLocaleString('en-US')} Hz`,
-    channels: (value: number) => (value === 1 ? 'Mono' : 'Stereo'),
     m4a: 'M4A · No re-encoding',
     m4aReencoded: 'M4A · Re-encoded AAC',
     flac: 'FLAC · Lossless',
     mp3: 'MP3 · 320 kbps',
-    m4aBoundaryAdjustment: (milliseconds: number) =>
-      `M4A copies AAC without re-encoding. Cut points will be adjusted by at most ${milliseconds} ms to match AAC frame boundaries.`,
-    flacSourceCaveat:
-      'FLAC preserves the exported PCM, but cannot restore detail already removed from AAC or MP3 sources.',
     mixClippingWarning:
       'Overlapping tracks may clip. SnapCut hard-limits samples that exceed the valid audio range.',
     unavailableReason: 'Unavailable',
     startAction: 'Export',
     cancelAction: 'Cancel',
     closeAction: 'Close',
-    shareAction: 'Share',
     retryAction: 'Try Again',
     cancelling: 'Stopping export…',
     exporting: (stage: string, percent: number | null) =>
@@ -110,9 +103,10 @@ export const copy = {
     successBoundaryAdjustment: (milliseconds: number) =>
       `Maximum M4A boundary adjustment: ${milliseconds} ms`,
     preflightError: 'SnapCut could not prepare export options.',
+    nativeUpdateRequired:
+      'The installed app is older than this Metro bundle. Reinstall the latest Debug APK.',
     exportError: 'SnapCut could not finish this export.',
     cancelled: 'Export cancelled.',
-    shareError: 'SnapCut could not open the Android share sheet.',
   },
   import: {
     title: 'Add Media',

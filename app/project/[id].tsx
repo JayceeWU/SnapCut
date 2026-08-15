@@ -177,7 +177,6 @@ export default function ProjectEditorScreen() {
   const historyCommandLocked = useRef(false);
 
   const exportStatus = useExportStore((state) => state.status);
-  const exportResult = useExportStore((state) => state.result);
   const importActive = useImportStore((state) => state.activeJobId !== null);
 
   useEffect(() => {
@@ -738,13 +737,6 @@ export default function ProjectEditorScreen() {
         onClose={closeExport}
         onExport={runExport}
         onRetry={() => void exportCoordinator.prepare(project).catch(() => undefined)}
-        onShare={() => {
-          if (exportResult) {
-            void exportCoordinator.share(exportResult).catch(() => {
-              useExportStore.getState().fail(copy.export.shareError);
-            });
-          }
-        }}
         visible={showExport}
       />
       <ImportProgressModal

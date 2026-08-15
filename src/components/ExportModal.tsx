@@ -32,7 +32,6 @@ interface ExportModalProps {
   onExport: () => void;
   onCancel: () => void;
   onRetry: () => void;
-  onShare: () => void;
 }
 
 const formatLabels: Record<SnapCutExportFormat, string> = {
@@ -49,14 +48,7 @@ function KeepAwakeGuard() {
   return null;
 }
 
-export function ExportModal({
-  visible,
-  onClose,
-  onExport,
-  onCancel,
-  onRetry,
-  onShare,
-}: ExportModalProps) {
+export function ExportModal({ visible, onClose, onExport, onCancel, onRetry }: ExportModalProps) {
   const status = useExportStore((state) => state.status);
   const preflight = useExportStore((state) => state.preflight);
   const selectedFormat = useExportStore((state) => state.selectedFormat);
@@ -127,64 +119,46 @@ export function ExportModal({
                     {copy.export.mixClippingWarning}
                   </Text>
                 ) : null}
-                {preflight.formats.map((format) => {
-                  const selected = selectedFormat === format.format;
-                  const label = formatLabel(format.format, format.mode);
-                  return (
-                    <Pressable
-                      accessibilityLabel={label}
-                      accessibilityRole="radio"
-                      accessibilityState={{ checked: selected, disabled: !format.available }}
-                      disabled={!format.available || busy}
-                      key={format.format}
-                      onPress={() => selectFormat(format.format)}
-                      style={({ pressed }) => [
-                        styles.formatCard,
-                        selected && styles.formatCardSelected,
-                        pressed && styles.formatCardPressed,
-                        !format.available && styles.formatCardDisabled,
-                      ]}
-                    >
-                      <View style={styles.formatHeader}>
-                        <Text
-                          style={[styles.formatTitle, !format.available && styles.disabledText]}
-                        >
-                          {label}
-                        </Text>
-                        <View style={[styles.radio, selected && styles.radioSelected]} />
-                      </View>
-                      {format.available ? (
-                        <>
+                {preflight.formats
+                  .filter(({ format }) => format !== 'flac')
+                  .map((format) => {
+                    const selected = selectedFormat === format.format;
+                    const label = formatLabel(format.format, format.mode);
+                    return (
+                      <Pressable
+                        accessibilityLabel={label}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: selected, disabled: !format.available }}
+                        disabled={!format.available || busy}
+                        key={format.format}
+                        onPress={() => selectFormat(format.format)}
+                        style={({ pressed }) => [
+                          styles.formatCard,
+                          selected && styles.formatCardSelected,
+                          pressed && styles.formatCardPressed,
+                          !format.available && styles.formatCardDisabled,
+                        ]}
+                      >
+                        <View style={styles.formatHeader}>
+                          <Text
+                            style={[styles.formatTitle, !format.available && styles.disabledText]}
+                          >
+                            {label}
+                          </Text>
+                          <View style={[styles.radio, selected && styles.radioSelected]} />
+                        </View>
+                        {format.available ? (
                           <Text style={styles.formatDetail}>
                             {copy.export.estimatedSize(formatBytes(format.estimatedOutputBytes))}
                           </Text>
-                          {format.sampleRateHz && format.channelCount ? (
-                            <Text style={styles.formatDetail}>
-                              {copy.export.sampleRate(format.sampleRateHz)} ·{' '}
-                              {copy.export.channels(format.channelCount)}
-                            </Text>
-                          ) : null}
-                          {format.format === 'm4a' &&
-                          format.mode === 'aac-stream-copy' &&
-                          preflight.m4aPlan.maxBoundaryAdjustmentMs > 0 ? (
-                            <Text style={styles.formatDetail}>
-                              {copy.export.m4aBoundaryAdjustment(
-                                preflight.m4aPlan.maxBoundaryAdjustmentMs,
-                              )}
-                            </Text>
-                          ) : null}
-                          {format.format === 'flac' ? (
-                            <Text style={styles.formatDetail}>{copy.export.flacSourceCaveat}</Text>
-                          ) : null}
-                        </>
-                      ) : (
-                        <Text style={styles.unavailableReason}>
-                          {format.reasons[0] ?? copy.export.unavailableReason}
-                        </Text>
-                      )}
-                    </Pressable>
-                  );
-                })}
+                        ) : (
+                          <Text style={styles.unavailableReason}>
+                            {format.reasons[0] ?? copy.export.unavailableReason}
+                          </Text>
+                        )}
+                      </Pressable>
+                    );
+                  })}
               </>
             ) : null}
 
@@ -233,10 +207,7 @@ export function ExportModal({
 
             <View style={styles.actions}>
               {status === 'success' ? (
-                <>
-                  <AppButton label={copy.export.closeAction} onPress={onClose} variant="ghost" />
-                  <AppButton label={copy.export.shareAction} onPress={onShare} />
-                </>
+                <AppButton label={copy.export.closeAction} onPress={onClose} />
               ) : status === 'failed' ? (
                 <>
                   <AppButton label={copy.export.closeAction} onPress={onClose} variant="ghost" />

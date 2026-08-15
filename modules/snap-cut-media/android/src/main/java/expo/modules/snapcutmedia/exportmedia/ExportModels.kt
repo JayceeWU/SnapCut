@@ -34,6 +34,7 @@ internal data class ExportPreflightData(
   val mayClip: Boolean
 ) {
   fun toBridgeMap(): Map<String, Any?> = mapOf(
+    "contractVersion" to 1,
     "preferredFormat" to preferredFormat.value,
     "m4aPlan" to m4aPlan.toBridgeMap(),
     "formats" to formats.map { it.toBridgeMap() },
@@ -77,6 +78,14 @@ internal data class ExportCodecCapabilities(
   val mp3Available: Boolean,
   val resamplerAvailable: Boolean
 )
+
+internal enum class ExportPreflightNativeStage(val value: String) {
+  RESOLVING("resolving"),
+  INSPECTING("inspecting"),
+  SCANNING("scanning"),
+  CAPABILITIES("capabilities"),
+  BRIDGE_RESULT("bridge_result")
+}
 
 internal enum class ExportStage(val value: String) {
   SCANNING("scanning"),

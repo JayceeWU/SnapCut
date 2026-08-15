@@ -100,6 +100,29 @@ internal object ExportFileAccess {
     return directory
   }
 
+  /**
+   * Keeps the URI spelling rooted at the same app-private path supplied by Android while
+   * proving that its canonical parent is the job directory we just created. This avoids
+   * false PATH_OUTSIDE_PRIVATE_STORAGE failures on devices where an app-private path has
+   * more than one system spelling (for example /data/user/0 and /data/data).
+   */
+  fun createJobOutputFile(stagingRoot: File, jobDirectory: File, fileName: String): File {
+    if (
+      fileName.isBlank() ||
+      fileName != File(fileName).name ||
+      fileName.any(Char::isISOControl)
+    ) {
+      throw mediaError(SnapCutMediaError.OUTPUT_WRITE_FAILED)
+    }
+    val output = File(File(stagingRoot.absoluteFile, jobDirectory.name), fileName)
+    val outputParent = runCatching { output.parentFile?.canonicalFile }.getOrNull()
+    val expectedParent = runCatching(jobDirectory::getCanonicalFile).getOrNull()
+    if (outputParent == null || expectedParent == null || outputParent.path != expectedParent.path) {
+      throw mediaError(SnapCutMediaError.OUTPUT_WRITE_FAILED)
+    }
+    return output
+  }
+
   fun sha256(
     file: File,
     cancellation: CancellationCheck,

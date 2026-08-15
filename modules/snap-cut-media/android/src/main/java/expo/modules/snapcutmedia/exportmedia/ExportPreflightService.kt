@@ -29,7 +29,25 @@ internal class ExportPreflightService(
     request: ExportPreflightRequest,
     cancellation: CancellationCheck,
     hooks: MediaResourceHooks = MediaResourceHooks.NONE,
-    progressSink: (ExportProgress) -> Unit = {}
+    progressSink: (ExportProgress) -> Unit = {},
+    nativeStageSink: (ExportPreflightNativeStage) -> Unit = {}
+  ): ExportPreflightData = try {
+    preflightChecked(request, cancellation, hooks, progressSink, nativeStageSink)
+  } catch (error: SnapCutMediaException) {
+    throw error
+  } catch (error: LinkageError) {
+    throw mediaError(SnapCutMediaError.EXPORT_PREFLIGHT_FAILED, cause = error)
+  } catch (error: Exception) {
+    cancellation.throwIfCancelled()
+    throw mediaError(SnapCutMediaError.EXPORT_PREFLIGHT_FAILED, cause = error)
+  }
+
+  private fun preflightChecked(
+    request: ExportPreflightRequest,
+    cancellation: CancellationCheck,
+    hooks: MediaResourceHooks,
+    progressSink: (ExportProgress) -> Unit,
+    nativeStageSink: (ExportPreflightNativeStage) -> Unit
   ): ExportPreflightData {
     if (request.jobId.isBlank() || request.projectId.isBlank() || request.generation < 0L) {
       throw mediaError(SnapCutMediaError.INVALID_REQUEST)
@@ -38,9 +56,11 @@ internal class ExportPreflightService(
     val reporter = ExportProgressReporter(progressSink)
     reporter.report(ExportStage.SCANNING, 0.0, force = true)
     cancellation.throwIfCancelled()
+    nativeStageSink(ExportPreflightNativeStage.RESOLVING)
     val clips = ExportFileAccess.resolveClips(request.clips, projectRoots)
     val sources = clips.groupBy(ResolvedExportClip::sourceId)
     val inspections = linkedMapOf<String, expo.modules.snapcutmedia.models.SourceInspection>()
+    nativeStageSink(ExportPreflightNativeStage.INSPECTING)
     sources.entries.forEachIndexed { index, (sourceId, sourceClips) ->
       cancellation.throwIfCancelled()
       val file = sourceClips.first().file
@@ -62,6 +82,7 @@ internal class ExportPreflightService(
 
     val sourcePlans = linkedMapOf<String, M4aSourcePlan>()
     val m4aReasons = linkedSetOf<String>()
+    nativeStageSink(ExportPreflightNativeStage.SCANNING)
     if (!TimelineAudio.streamCopyEligible(request.clips)) {
       m4aReasons += TIMELINE_PROCESSING_REASON
     }
@@ -80,6 +101,13 @@ internal class ExportPreflightService(
         m4aReasons += error.safeReason
       } catch (error: SnapCutMediaException) {
         if (error.error == SnapCutMediaError.EXPORT_CANCELLED) throw error
+        m4aReasons += M4A_SCAN_REASON
+      } catch (_: LinkageError) {
+        // M4A stream-copy inspection is an optional optimization. Some Android
+        // 29 vendor runtimes expose incomplete MediaExtractor/MediaFormat APIs
+        // and throw a linkage error here. Keep decoded M4A/FLAC/MP3 export
+        // available instead of failing the entire preflight.
+        cancellation.throwIfCancelled()
         m4aReasons += M4A_SCAN_REASON
       } catch (_: Exception) {
         cancellation.throwIfCancelled()
@@ -106,6 +134,7 @@ internal class ExportPreflightService(
     val flacEstimate = ExportMath.estimateFlacBytes(requestedDurationMs, outputRate, outputChannels)
     val mp3Estimate = ExportMath.estimateMp3Bytes(requestedDurationMs)
     val aacEstimate = ExportMath.estimateAacBytes(requestedDurationMs, outputChannels)
+    nativeStageSink(ExportPreflightNativeStage.CAPABILITIES)
     val capabilities = codecCapabilities(outputRate, outputChannels)
     val needsResampling = inspections.values.any { it.sampleRateHz != outputRate }
     val flacReasons = buildList {
@@ -184,6 +213,7 @@ internal class ExportPreflightService(
       planRegistry.issue(request.projectId, m4aPlan, request.clips)
     }
     reporter.report(ExportStage.COMPLETE, 1.0, force = true)
+    nativeStageSink(ExportPreflightNativeStage.BRIDGE_RESULT)
     return result
   }
 

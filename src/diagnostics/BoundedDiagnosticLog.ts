@@ -24,6 +24,7 @@ export interface DiagnosticFields {
   androidVersion?: string | number;
   nativeStage?: string;
   causeCategory?: string;
+  contractBoundary?: string;
   contractFields?: string;
   repairIssues?: string;
 }
@@ -54,6 +55,7 @@ const SAFE_FIELD_KEYS = new Set<keyof DiagnosticFields>([
   'androidVersion',
   'nativeStage',
   'causeCategory',
+  'contractBoundary',
   'contractFields',
   'repairIssues',
 ]);

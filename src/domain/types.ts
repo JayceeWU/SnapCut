@@ -220,6 +220,7 @@ export interface ExportFormatAvailability {
 }
 
 export interface ExportPreflightResult {
+  contractVersion: 1;
   preferredFormat: 'm4a' | 'flac';
   m4aPlan: M4aExportPlan;
   formats: ExportFormatAvailability[];

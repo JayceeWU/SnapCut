@@ -9,6 +9,7 @@ import expo.modules.snapcutmedia.errors.SnapCutMediaError
 import expo.modules.snapcutmedia.errors.SnapCutMediaException
 import expo.modules.snapcutmedia.errors.mediaError
 import expo.modules.snapcutmedia.exportmedia.ExportProgress
+import expo.modules.snapcutmedia.exportmedia.ExportPreflightNativeStage
 import expo.modules.snapcutmedia.exportmedia.SnapCutExportServices
 import expo.modules.snapcutmedia.jobs.NativeJobRegistry
 import expo.modules.snapcutmedia.jobs.NativeJobResource
@@ -288,25 +289,53 @@ class SnapCutMediaModule : Module() {
 
     AsyncFunction("preflightExport") Coroutine { request: ExportPreflightRequest ->
       withJob<Map<String, Any?>>(NativeOperation.PREFLIGHT, request.jobId, request.generation) {
-        val coroutineJob = currentCoroutineContext().job
-        val cancellation = cancellationCheck(
-          NativeOperation.PREFLIGHT,
-          request.jobId,
-          request.generation,
-          coroutineJob,
-          SnapCutMediaError.EXPORT_CANCELLED
-        )
-        val hooks = resourceHooks(NativeOperation.PREFLIGHT, request.jobId, request.generation)
-        withContext(Dispatchers.IO) {
-          exports().preflight(request, cancellation, hooks) { progress ->
-            emitExportProgress(
-              NativeOperation.PREFLIGHT,
-              request.jobId,
-              request.generation,
-              null,
-              progress
+        val stage = AtomicReference(ExportPreflightNativeStage.RESOLVING)
+        try {
+          val coroutineJob = currentCoroutineContext().job
+          val cancellation = cancellationCheck(
+            NativeOperation.PREFLIGHT,
+            request.jobId,
+            request.generation,
+            coroutineJob,
+            SnapCutMediaError.EXPORT_CANCELLED
+          )
+          val hooks = resourceHooks(NativeOperation.PREFLIGHT, request.jobId, request.generation)
+          withContext(Dispatchers.IO) {
+            exports().preflight(
+              request,
+              cancellation,
+              hooks,
+              progressSink = { progress ->
+                emitExportProgress(
+                  NativeOperation.PREFLIGHT,
+                  request.jobId,
+                  request.generation,
+                  null,
+                  progress
+                )
+              },
+              nativeStageSink = stage::set
             )
           }
+        } catch (error: SnapCutMediaException) {
+          emitExportError(request, error.error, stage.get(), categoryFor(error.error))
+          throw error
+        } catch (_: LinkageError) {
+          emitExportError(
+            request,
+            SnapCutMediaError.EXPORT_PREFLIGHT_FAILED,
+            stage.get(),
+            "linkage"
+          )
+          throw mediaError(SnapCutMediaError.EXPORT_PREFLIGHT_FAILED)
+        } catch (_: Exception) {
+          emitExportError(
+            request,
+            SnapCutMediaError.EXPORT_PREFLIGHT_FAILED,
+            stage.get(),
+            "native"
+          )
+          throw mediaError(SnapCutMediaError.EXPORT_PREFLIGHT_FAILED)
         }
       }
     }
@@ -597,6 +626,32 @@ class SnapCutMediaModule : Module() {
     )
     if (format != null) body["format"] = format
     sendEvent("onExportProgress", body)
+  }
+
+  private fun emitExportError(
+    request: ExportPreflightRequest,
+    error: SnapCutMediaError,
+    nativeStage: ExportPreflightNativeStage,
+    causeCategory: String
+  ) {
+    if (!jobs.isCurrent(NativeOperation.PREFLIGHT, request.jobId, request.generation)) return
+    val sequence = runCatching {
+      jobs.nextSequence(NativeOperation.PREFLIGHT, request.jobId, request.generation)
+    }.getOrNull() ?: return
+    sendEvent(
+      "onNativeError",
+      mapOf(
+        "jobId" to request.jobId,
+        "operation" to NativeOperation.PREFLIGHT.value,
+        "sequence" to sequence,
+        "stage" to nativeStage.value,
+        "generation" to request.generation,
+        "code" to error.code,
+        "message" to error.safeMessage,
+        "nativeStage" to nativeStage.value,
+        "causeCategory" to causeCategory
+      )
+    )
   }
 
   private fun emitProgress(

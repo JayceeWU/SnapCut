@@ -31,7 +31,11 @@ internal data class CompositionEncoderConfig(
 
 internal class NativeCompositionEncoderFactory : CompositionEncoderFactory {
   override fun create(config: CompositionEncoderConfig): CompositionEncoder =
-    NativeCompositionEncoder(config)
+    if (config.format == ExportFormat.M4A) {
+      AacCompositionEncoder(config)
+    } else {
+      NativeCompositionEncoder(config)
+    }
 }
 
 internal class NativeStatefulResamplerFactory(

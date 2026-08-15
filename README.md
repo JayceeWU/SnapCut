@@ -1,14 +1,15 @@
 # SnapCut
 
 SnapCut is an offline Android audio editor for arranging precise ranges from local audio and
-video into a new composition. It keeps imported working media in the app's private storage,
-renders an interactive waveform, previews selections and clip order, and exports M4A, FLAC, or
-MP3 without sending media to a server.
+video on a two-track timeline. It keeps imported working media in the app's private storage,
+renders interactive waveforms, previews overlapping clips, and exports M4A, FLAC, or MP3 without
+sending media to a server.
 
-> **Engineering status:** the version 1 code and local automated Android builds are complete.
-> Connected emulator, offline-install, EAS, and physical-device acceptance remain pending. See
+> **Engineering status:** the current working tree targets the schema-v6 fixed-center editor
+> revision. Its local JavaScript, Kotlin, native-codec, and Debug APK gates pass; connected
+> emulator and physical-device acceptance has not yet passed for this revision. See
 > [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) for the exact verification boundary;
-> compiled source is not treated as proof that a native media path passed runtime validation.
+> source or compilation alone is not treated as proof that a native media path works at runtime.
 
 ## What it does
 
@@ -17,16 +18,44 @@ MP3 without sending media to a server.
 - Treats picker MIME types, names, extensions, and reported sizes as hints; Android media tracks
   and decoder availability are authoritative.
 - Creates an application-private working source before a project references the media.
+- Commits each imported source and its full-length timeline Clip together. The first Clip starts
+  at zero on Track 1; later imports also append to Track 1 and can then be dragged to Track 2. After
+  the committed project is reloaded successfully, the import progress modal closes automatically
+  and the new Clip appears.
 - Generates an 8,192-bin RMS/peak waveform without transferring PCM or media bytes into
   JavaScript.
-- Supports non-destructive clip add, edit, duplicate, delete, and reorder operations. Source
-  ranges may overlap and may be reused.
-- Uses one native Media3 ExoPlayer for selection and composition preview.
+- Presents the composition in a fixed `248dp` editor stage: an `80dp` upper scrub/ruler zone, two
+  permanently visible `56dp` tracks, and a `56dp` lower scrub zone. A fixed red playhead stays at
+  the exact horizontal center while the ruler, waveforms, and Clips move below it.
+- Uses the upper and lower zones only for tap/scrub positioning. Scrubbing pauses immediately and
+  never resumes automatically. Inside a track, dragging moves or changes the track of a Clip and
+  does not change playback time; white edge handles trim the source range directly.
+- Uses an overview bar below the tracks as the only viewport control. Its two handles resize the
+  visible interval, its body moves that interval, and a tap recenters it. The default visible span
+  is 30 seconds, the minimum is 1 second, and the main stage has no pinch-to-zoom gesture.
+- Supports split, delete, per-Clip gain from 0% to 100%, and independent equal-power fade-in and
+  fade-out operations. Volume uses one inline slider; Fade uses two inline sliders in 0.5-second
+  steps from 0 through 6 seconds. Fade-in plus fade-out cannot exceed the Clip duration.
+- Allows silent gaps and cross-track overlap while preventing overlap within one track. Editing
+  operations have a 50-step session-only Undo/Redo history; imported Sources remain available
+  when their automatically added Clip is undone.
+- Keeps Rename and Delete on the project list. The editor has no project overflow menu, and its
+  selected-Clip action rail contains one icon and one label for Volume, Fade, Split, and Delete.
+- Uses up to two synchronized native Media3 ExoPlayer instances, one per track, for composition
+  preview. Pause is an explicit revisioned command: the UI freezes immediately, stale load/play/
+  seek results cannot revive playback, and preview and decoded export apply the same Clip timing,
+  gain, and fade envelope.
 - Exports one composition as:
-  - M4A stream copy when every selected AAC source is compatible and clip boundaries can be
-    aligned safely;
+  - `M4A · No re-encoding` when a contiguous, non-overlapping sequence uses compatible AAC,
+    unity gain, no fades, and safely aligned access-unit boundaries;
+  - `M4A · Re-encoded AAC` when the timeline requires mixing or processing, using AAC-LC at
+    320 kbps stereo or 160 kbps mono when the device exposes the required encoder;
   - 24-bit FLAC through one continuous encoder; or
   - 320 kbps CBR MP3 through one continuous encoder.
+
+FLAC, MP3, and re-encoded M4A share a bounded streaming two-track PCM mixer. They do not create a
+full temporary WAV composition. Overlapping tracks are summed after per-Clip gain and equal-power
+fades; values outside the valid PCM range are hard-clamped and the UI warns when overlap may clip.
 
 Converting AAC or MP3 input to FLAC does not restore information already lost by the source
 codec. MP3 output is not bit-perfect.
@@ -38,9 +67,9 @@ Expo Router / React Native / strict TypeScript
         │  project state, clips, UI, Zod contracts
         ▼
 SnapCutMedia local Expo Module (Kotlin)
-        │  opaque content URI, inspection, bounded I/O, waveform, preview, export
+        │  opaque content URI, inspection, bounded I/O, waveform, two-track preview/export
         ├── Android MediaExtractor / MediaCodec / MediaMuxer
-        ├── Media3 ExoPlayer 1.10.1
+        ├── Media3 ExoPlayer 1.10.1 (at most one player per track)
         └── JNI: libFLAC 1.5.0 / LAME 4.0 / libsamplerate 0.2.2
 ```
 
@@ -115,7 +144,7 @@ contrast.
 - Android NDK 27.1 and CMake 3.22.1
 - Android 10 (API 29) or newer
 
-The committed dependency baseline is Expo `57.0.12`, React Native `0.86.2`, React `19.2.3`, and
+The committed dependency baseline is Expo `57.0.13`, React Native `0.86.2`, React `19.2.3`, and
 Media3 `1.10.1`. Native codecs are built from pinned source: libFLAC `1.5.0`, LAME `4.0`, and
 libsamplerate `0.2.2`. `npm ci` installs the exact JavaScript dependency graph from
 `package-lock.json`.
@@ -143,15 +172,17 @@ npx expo prebuild --clean --platform android --no-install
 Run native tests and builds from the generated Android project with JDK 17:
 
 ```powershell
-.\android\gradlew.bat :snap-cut-media:testDebugUnitTest --stacktrace --no-daemon
-.\android\gradlew.bat :snap-cut-media:verifyMedia3Versions --stacktrace --no-daemon
-.\android\gradlew.bat :snap-cut-media:verifyNativeCodecSources --stacktrace --no-daemon
-.\android\gradlew.bat :app:assembleDebug :app:assembleRelease --stacktrace --no-daemon
+Push-Location .\android
+.\gradlew.bat :snap-cut-media:testDebugUnitTest --stacktrace --no-daemon
+.\gradlew.bat :snap-cut-media:verifyMedia3Versions --stacktrace --no-daemon
+.\gradlew.bat :snap-cut-media:verifyNativeCodecSources --stacktrace --no-daemon
+.\gradlew.bat :app:assembleDebug --stacktrace --no-daemon
+Pop-Location
 ```
 
-On macOS or Linux, use `./android/gradlew` with the same tasks. The local outputs are generated at
-`android/app/build/outputs/apk/debug/app-debug.apk` and
-`android/app/build/outputs/apk/release/app-release.apk`.
+On macOS or Linux, change into `android` and use `./gradlew` with the same tasks. During active
+iteration, the only APK output to deliver is
+`android/app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Development APK
 
@@ -161,7 +192,9 @@ For local Android development, generate and install a Debug APK, then start Metr
 
 ```powershell
 npx expo prebuild --clean --platform android --no-install
-.\android\gradlew.bat :app:assembleDebug
+Push-Location .\android
+.\gradlew.bat :app:assembleDebug
+Pop-Location
 # Install app-debug.apk with Android Studio or: adb install -r .\android\app\build\outputs\apk\debug\app-debug.apk
 npm start
 ```
@@ -184,7 +217,11 @@ LAN, use a tunnel or Android Debug Bridge port reversal. Any Kotlin, C/C++, Grad
 permission, or app-config change requires a new APK; Fast Refresh is sufficient only for
 JavaScript/TypeScript changes.
 
-## Offline Release and Preview APKs
+## Release and Preview APKs after finalization
+
+Do not run or deliver a Release or Preview build while this revision is still being iterated. The
+current delivery contract is Debug-only until the user explicitly says SnapCut is finalized. The
+commands below are retained for that later acceptance stage, not for routine revision testing.
 
 A local Release APK embeds the JavaScript bundle and does not require Metro at runtime:
 
@@ -192,7 +229,9 @@ A local Release APK embeds the JavaScript bundle and does not require Metro at r
 npm ci
 npx expo prebuild --clean --platform android --no-install
 $env:NODE_ENV = 'production'
-.\android\gradlew.bat :app:assembleRelease --stacktrace --no-daemon
+Push-Location .\android
+.\gradlew.bat :app:assembleRelease --stacktrace --no-daemon
+Pop-Location
 ```
 
 The generated Expo Android project signs this local Release build with its generated development
@@ -220,11 +259,11 @@ offline runtime test.
 
 ## Quality and verification boundary
 
-The main GitHub Actions workflow is configured to run the Node 22 quality suite, regenerate
-Android, run Kotlin unit tests plus Media3/native-source gates, and compile Debug plus minified
-Release APKs with JDK 17. A separate manually dispatched instrumentation workflow targets
-x86_64 API 29 and API 36 emulators. Workflow configuration is not recorded as a passing result
-until the corresponding GitHub run completes.
+The current schema-v6 gate set covers the Node 22 quality suite, regenerated Android project,
+Kotlin unit tests, Media3/native-source gates, and a Debug APK built with JDK 17. Release and
+Preview packaging remain deferred until explicit finalization. A separate manually dispatched
+instrumentation workflow targets x86_64 API 29 and API 36 emulators. Workflow configuration is
+not recorded as a passing result until the corresponding GitHub run completes.
 
 `IMPLEMENTATION_STATUS.md` records which implementation phases and local gates have actually
 passed. Physical-device results are recorded separately; emulator, Jest, and Gradle success must

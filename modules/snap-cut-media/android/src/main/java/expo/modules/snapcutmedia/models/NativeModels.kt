@@ -26,6 +26,11 @@ enum class ExportFormat(val value: String) : Enumerable {
   MP3("mp3")
 }
 
+enum class TrackId(val value: String) : Enumerable {
+  TRACK_1("track-1"),
+  TRACK_2("track-2")
+}
+
 enum class NativeOperation(val value: String) : Enumerable {
   IMPORT("import"),
   WAVEFORM("waveform"),
@@ -122,27 +127,36 @@ data class NativePreviewClip(
   @Field val sourceId: String,
   @Field val audioFileUri: String,
   @Field val startMs: Long,
-  @Field val endMs: Long
+  @Field val endMs: Long,
+  @Field val trackId: TrackId = TrackId.TRACK_1,
+  @Field val timelineStartMs: Long = 0L,
+  @Field val gain: Double = 1.0,
+  @Field val fadeInMs: Long = 0L,
+  @Field val fadeOutMs: Long = 0L
 ) : Record
 
 @OptimizedRecord
 data class LoadPreviewRequest(
   @Field val playbackSessionId: String,
   @Field val generation: Long,
+  @Field val controlRevision: Long,
   @Field val clips: List<NativePreviewClip>
 ) : Record
 
 @OptimizedRecord
 data class PreviewCommandRequest(
   @Field val playbackSessionId: String,
-  @Field val generation: Long
+  @Field val generation: Long,
+  @Field val controlRevision: Long
 ) : Record
 
 @OptimizedRecord
 data class SeekPreviewRequest(
   @Field val playbackSessionId: String,
   @Field val generation: Long,
-  @Field val positionMs: Long
+  @Field val controlRevision: Long,
+  @Field val positionMs: Long,
+  @Field val resumeAfterSeek: Boolean
 ) : Record
 
 @OptimizedRecord

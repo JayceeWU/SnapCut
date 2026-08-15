@@ -1,99 +1,147 @@
 package expo.modules.snapcutmedia.preview
 
 import expo.modules.snapcutmedia.errors.SnapCutMediaException
+import expo.modules.snapcutmedia.models.TrackId
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class PreviewTimelineTest {
   @Test
-  fun `selection maps clipped item positions onto a zero based preview`() {
+  fun `selection normalizes a source range onto a zero based preview`() {
     val timeline = PreviewTimeline.create(
       PreviewMode.SELECTION,
-      listOf(clip("clip-a", startMs = 12_000L, endMs = 42_000L))
+      listOf(clip("clip-a", 12_000, 42_000, TrackId.TRACK_2, 90_000))
     )
 
     assertEquals(30_000L, timeline.durationMs)
-    assertEquals(
-      PreviewPosition(0, "clip-a", 0L, 0L),
-      timeline.position(currentClipIndex = 0, itemPositionMs = -20L)
-    )
-    assertEquals(
-      PreviewPosition(0, "clip-a", 17_500L, 17_500L),
-      timeline.position(currentClipIndex = 0, itemPositionMs = 17_500L)
-    )
-    assertEquals(
-      PreviewSeekTarget(0, 30_000L, 30_000L),
-      timeline.seekTarget(30_000L)
-    )
+    assertEquals(TrackId.TRACK_1, timeline.clips.single().trackId)
+    assertEquals(0L, timeline.clips.single().timelineStartMs)
+    assertEquals(PreviewPosition(0, "clip-a", 17_500L), timeline.positionAt(17_500L))
   }
 
   @Test
-  fun `composition preserves clip order and maps exact boundaries to the next item`() {
+  fun `composition includes gaps and overlapping second track`() {
     val timeline = PreviewTimeline.create(
       PreviewMode.COMPOSITION,
       listOf(
-        clip("first", startMs = 5_000L, endMs = 6_000L),
-        clip("second", startMs = 10_000L, endMs = 10_300L),
-        clip("third", startMs = 0L, endMs = 700L)
+        clip("first", 0, 1_000, TrackId.TRACK_1, 0),
+        clip("second", 0, 300, TrackId.TRACK_1, 1_300),
+        clip("overlay", 0, 700, TrackId.TRACK_2, 500)
       )
     )
 
-    assertEquals(listOf("first", "second", "third"), timeline.clips.map { it.clipId })
-    assertEquals(2_000L, timeline.durationMs)
-    assertEquals(PreviewSeekTarget(0, 999L, 999L), timeline.seekTarget(999L))
-    assertEquals(PreviewSeekTarget(1, 0L, 1_000L), timeline.seekTarget(1_000L))
-    assertEquals(PreviewSeekTarget(1, 299L, 1_299L), timeline.seekTarget(1_299L))
-    assertEquals(PreviewSeekTarget(2, 0L, 1_300L), timeline.seekTarget(1_300L))
-    assertEquals(PreviewSeekTarget(2, 700L, 2_000L), timeline.seekTarget(2_000L))
-    assertEquals(PreviewSeekTarget(2, 700L, 2_000L), timeline.seekTarget(Long.MAX_VALUE))
-    assertEquals(
-      PreviewPosition(1, "second", 125L, 1_125L),
-      timeline.position(currentClipIndex = 1, itemPositionMs = 125L)
-    )
+    assertEquals(1_600L, timeline.durationMs)
+    assertEquals(2, timeline.tracks.size)
+    assertEquals(listOf(1_000L, 300L, 300L), timeline.tracks[0].items.map { it.durationMs })
+    assertEquals(TrackSeekTarget(1, 100L), timeline.tracks[0].seekTarget(1_100L))
+    assertEquals("first", timeline.positionAt(500L).clipId)
+    assertNull(timeline.positionAt(1_250L).clipId)
   }
 
   @Test
-  fun `rejects empty multi item selection and sub minimum clip ranges`() {
-    val empty = assertThrows(SnapCutMediaException::class.java) {
-      PreviewTimeline.create(PreviewMode.COMPOSITION, emptyList())
-    }
-    assertEquals("INVALID_REQUEST", empty.code)
-
-    val multipleSelection = assertThrows(SnapCutMediaException::class.java) {
-      PreviewTimeline.create(
-        PreviewMode.SELECTION,
-        listOf(clip("one", 0L, 100L), clip("two", 0L, 100L))
+  fun `accepts stepped fades through six seconds`() {
+    val timeline = PreviewTimeline.create(
+      PreviewMode.COMPOSITION,
+      listOf(
+        clip(
+          "maximum-fades",
+          0,
+          12_000,
+          fadeInMs = 6_000,
+          fadeOutMs = 6_000
+        )
       )
-    }
-    assertEquals("INVALID_REQUEST", multipleSelection.code)
+    )
 
-    val tooShort = assertThrows(SnapCutMediaException::class.java) {
-      PreviewTimeline.create(
-        PreviewMode.COMPOSITION,
-        listOf(clip("short", 20L, 119L))
-      )
-    }
-    assertEquals("INVALID_CLIP_RANGE", tooShort.code)
+    assertEquals(6_000L, timeline.clips.single().fadeInMs)
+    assertEquals(6_000L, timeline.clips.single().fadeOutMs)
+  }
 
-    val duplicateId = assertThrows(SnapCutMediaException::class.java) {
-      PreviewTimeline.create(
-        PreviewMode.COMPOSITION,
-        listOf(clip("duplicate", 0L, 100L), clip("duplicate", 200L, 400L))
-      )
-    }
-    assertEquals("INVALID_CLIP_RANGE", duplicateId.code)
+  @Test
+  fun `rejects overlap on one track and invalid selections`() {
+    assertEquals(
+      "INVALID_REQUEST",
+      assertThrows(SnapCutMediaException::class.java) {
+        PreviewTimeline.create(PreviewMode.COMPOSITION, emptyList())
+      }.code
+    )
+    assertEquals(
+      "INVALID_REQUEST",
+      assertThrows(SnapCutMediaException::class.java) {
+        PreviewTimeline.create(
+          PreviewMode.SELECTION,
+          listOf(clip("one", 0, 100), clip("two", 0, 100))
+        )
+      }.code
+    )
+    assertEquals(
+      "INVALID_CLIP_RANGE",
+      assertThrows(SnapCutMediaException::class.java) {
+        PreviewTimeline.create(
+          PreviewMode.COMPOSITION,
+          listOf(
+            clip("one", 0, 1_000, timelineStartMs = 0),
+            clip("two", 0, 1_000, timelineStartMs = 500)
+          )
+        )
+      }.code
+    )
+    assertEquals(
+      "INVALID_CLIP_RANGE",
+      assertThrows(SnapCutMediaException::class.java) {
+        PreviewTimeline.create(
+          PreviewMode.SELECTION,
+          listOf(clip("invalid-fade", 0, 1_000, fadeInMs = 250))
+        )
+      }.code
+    )
+    assertEquals(
+      "INVALID_CLIP_RANGE",
+      assertThrows(SnapCutMediaException::class.java) {
+        PreviewTimeline.create(
+          PreviewMode.SELECTION,
+          listOf(clip("over-limit-fade", 0, 12_000, fadeInMs = 6_500))
+        )
+      }.code
+    )
+    assertEquals(
+      "INVALID_CLIP_RANGE",
+      assertThrows(SnapCutMediaException::class.java) {
+        PreviewTimeline.create(
+          PreviewMode.COMPOSITION,
+          listOf(
+            clip(
+              "excessive-total-fade",
+              0,
+              6_000,
+              fadeInMs = 3_500,
+              fadeOutMs = 3_000
+            )
+          )
+        )
+      }.code
+    )
   }
 
   private fun clip(
     id: String,
     startMs: Long,
-    endMs: Long
+    endMs: Long,
+    trackId: TrackId = TrackId.TRACK_1,
+    timelineStartMs: Long = 0L,
+    fadeInMs: Long = 0L,
+    fadeOutMs: Long = 0L
   ) = PreviewClip(
-    clipId = id,
-    sourceId = "source-$id",
-    audioFileUri = "file:///private/$id/source.m4a",
-    startMs = startMs,
-    endMs = endMs
+    id,
+    "source-$id",
+    "file:///private/$id/source.m4a",
+    startMs,
+    endMs,
+    trackId,
+    timelineStartMs,
+    fadeInMs = fadeInMs,
+    fadeOutMs = fadeOutMs
   )
 }

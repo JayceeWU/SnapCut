@@ -10,6 +10,7 @@ import expo.modules.snapcutmedia.source.CancellationCheck
 import expo.modules.snapcutmedia.source.MediaResourceHooks
 import expo.modules.snapcutmedia.source.SourceInspector
 import expo.modules.snapcutmedia.source.SourceSizePolicy
+import expo.modules.snapcutmedia.timeline.TimelineAudio
 import java.io.File
 import java.time.Instant
 import java.util.UUID
@@ -20,7 +21,7 @@ internal class ExportPreflightService(
   private val projectRoots: Collection<File>,
   private val planRegistry: M4aPlanRegistry,
   private val m4aScanner: M4aSourceScanner = M4aSourceScanner(),
-  private val codecCapabilities: () -> ExportCodecCapabilities,
+  private val codecCapabilities: (Int, Int) -> ExportCodecCapabilities,
   private val planIdFactory: () -> String = { UUID.randomUUID().toString() },
   private val now: () -> String = { Instant.now().toString() }
 ) {
@@ -61,6 +62,9 @@ internal class ExportPreflightService(
 
     val sourcePlans = linkedMapOf<String, M4aSourcePlan>()
     val m4aReasons = linkedSetOf<String>()
+    if (!TimelineAudio.streamCopyEligible(request.clips)) {
+      m4aReasons += TIMELINE_PROCESSING_REASON
+    }
     sources.entries.forEachIndexed { index, (sourceId, sourceClips) ->
       cancellation.throwIfCancelled()
       try {
@@ -95,13 +99,14 @@ internal class ExportPreflightService(
       if (sampleRates.size != 1 || channelCounts.size != 1) m4aReasons += LAYOUT_REASON
     }
 
-    val m4aPlan = buildM4aPlan(request, sourcePlans, m4aReasons)
-    val requestedDurationMs = ExportMath.safeDurationSum(clips.map { it.endMs - it.startMs })
+    val m4aPlan = buildM4aPlan(clips, sourcePlans, m4aReasons)
+    val requestedDurationMs = clips.maxOf(ResolvedExportClip::timelineEndMs)
     val outputRate = ExportMath.outputSampleRate(inspections.values.map { it.sampleRateHz })
     val outputChannels = ExportMath.outputChannelCount(inspections.values.map { it.channelCount })
     val flacEstimate = ExportMath.estimateFlacBytes(requestedDurationMs, outputRate, outputChannels)
     val mp3Estimate = ExportMath.estimateMp3Bytes(requestedDurationMs)
-    val capabilities = codecCapabilities()
+    val aacEstimate = ExportMath.estimateAacBytes(requestedDurationMs, outputChannels)
+    val capabilities = codecCapabilities(outputRate, outputChannels)
     val needsResampling = inspections.values.any { it.sampleRateHz != outputRate }
     val flacReasons = buildList {
       if (!capabilities.flacAvailable) add("The FLAC encoder is unavailable in this build.")
@@ -115,18 +120,41 @@ internal class ExportPreflightService(
         add("Sample-rate conversion is unavailable in this build.")
       }
     }
+    val aacReasons = buildList {
+      if (!capabilities.aacAvailable) add("AAC-LC encoding is unavailable on this device.")
+      if (needsResampling && !capabilities.resamplerAvailable) {
+        add("Sample-rate conversion is unavailable in this build.")
+      }
+    }
+    val m4aStreamCopy = m4aPlan.eligible
+    val m4aAvailable = m4aStreamCopy || aacReasons.isEmpty()
+    val m4aMode = when {
+      m4aStreamCopy -> "aac-stream-copy"
+      aacReasons.isEmpty() -> "aac-lossy-encode"
+      else -> null
+    }
+    val m4aAvailabilityReasons = when {
+      m4aStreamCopy -> emptyList()
+      aacReasons.isEmpty() -> emptyList()
+      else -> aacReasons
+    }
+    val m4aEstimate = if (m4aStreamCopy) m4aPlan.estimatedOutputBytes else aacEstimate
+    val m4aRate = if (m4aStreamCopy) m4aPlan.sampleRateHz else outputRate
+    val m4aChannels = if (m4aStreamCopy) m4aPlan.channelCount else outputChannels
     val formats = listOf(
       ExportFormatAvailabilityData(
         ExportFormat.M4A,
-        m4aPlan.eligible,
-        m4aPlan.reasons,
-        m4aPlan.estimatedOutputBytes,
-        m4aPlan.estimatedOutputBytes?.let(ExportMath::requiredFreeBytes),
-        m4aPlan.sampleRateHz,
-        m4aPlan.channelCount
+        m4aMode,
+        m4aAvailable,
+        m4aAvailabilityReasons,
+        m4aEstimate,
+        m4aEstimate?.let(ExportMath::requiredFreeBytes),
+        m4aRate,
+        m4aChannels
       ),
       ExportFormatAvailabilityData(
         ExportFormat.FLAC,
+        if (flacReasons.isEmpty()) "flac-lossless-encode" else null,
         flacReasons.isEmpty(),
         flacReasons,
         flacEstimate,
@@ -136,6 +164,7 @@ internal class ExportPreflightService(
       ),
       ExportFormatAvailabilityData(
         ExportFormat.MP3,
+        if (mp3Reasons.isEmpty()) "mp3-lossy-encode" else null,
         mp3Reasons.isEmpty(),
         mp3Reasons,
         mp3Estimate,
@@ -145,9 +174,10 @@ internal class ExportPreflightService(
       )
     )
     val result = ExportPreflightData(
-      preferredFormat = if (m4aPlan.eligible) ExportFormat.M4A else ExportFormat.FLAC,
+      preferredFormat = if (m4aAvailable) ExportFormat.M4A else ExportFormat.FLAC,
       m4aPlan = m4aPlan,
-      formats = formats
+      formats = formats,
+      mayClip = TimelineAudio.mayHardClip(request.clips)
     )
     cancellation.throwIfCancelled()
     if (m4aPlan.eligible) {
@@ -162,8 +192,10 @@ internal class ExportPreflightService(
       bridgeLoaded: Boolean,
       flacAvailable: Boolean,
       mp3Available: Boolean,
-      resamplerAvailable: Boolean
+      resamplerAvailable: Boolean,
+      aacAvailable: Boolean = true
     ): ExportCodecCapabilities = ExportCodecCapabilities(
+      aacAvailable = aacAvailable,
       flacAvailable = bridgeLoaded && flacAvailable,
       mp3Available = bridgeLoaded && mp3Available,
       resamplerAvailable = bridgeLoaded && resamplerAvailable
@@ -176,10 +208,12 @@ internal class ExportPreflightService(
       "AAC codec configurations differ between selected sources."
     private const val LAYOUT_REASON =
       "AAC sample rates or channel counts differ between selected sources."
+    private const val TIMELINE_PROCESSING_REASON =
+      "This timeline needs mixing, gain, fades, or silence and cannot use M4A stream copy."
   }
 
   private fun buildM4aPlan(
-    request: ExportPreflightRequest,
+    resolvedClips: List<ResolvedExportClip>,
     sourcePlans: Map<String, M4aSourcePlan>,
     reasons: Set<String>
   ): M4aExportPlan {
@@ -203,7 +237,7 @@ internal class ExportPreflightService(
     val plannedByClip = sourcePlans.values
       .flatMap(M4aSourcePlan::plannedClips)
       .associateBy { it.clipId }
-    val plannedClips = request.clips.map { clip ->
+    val plannedClips = resolvedClips.map { clip ->
       plannedByClip[clip.clipId] ?: throw mediaError(SnapCutMediaError.EXPORT_PREFLIGHT_FAILED)
     }
     val payloadBytes = plannedClips.fold(0L) { total, clip ->

@@ -145,9 +145,38 @@ def verifyMedia3Versions = tasks.register('verifyMedia3Versions') {
   }
 }
 
+def verifyNativePageSizeLinking = tasks.register('verifyNativePageSizeLinking') {
+  group = 'verification'
+  description = 'Verifies SnapCut shared libraries are linked for 16 KiB Android pages.'
+
+  doLast {
+    def cmakeFile = file('src/main/cpp/CMakeLists.txt')
+    def cmakeText = cmakeFile.getText(StandardCharsets.UTF_8.name())
+    def requiredPageSizeBytes = 16 * 1024
+    def requiredSnippets = [
+      "set(SNAPCUT_ANDROID_MAX_PAGE_SIZE \"${requiredPageSizeBytes}\")",
+      '"LINKER:-z,max-page-size=${SNAPCUT_ANDROID_MAX_PAGE_SIZE}"',
+      'snapcut_enable_16k_page_alignment(mp3lame)',
+      'snapcut_enable_16k_page_alignment(snapcut_codec)'
+    ]
+    def missingSnippets = requiredSnippets.findAll { !cmakeText.contains(it) }
+    if (!missingSnippets.isEmpty()) {
+      throw new GradleException(
+        "SnapCut 16 KiB native page-size linking is incomplete: missing ${missingSnippets}."
+      )
+    }
+
+    logger.lifecycle(
+      'SnapCut native page-size linking verified for libmp3lame.so and libsnapcut_codec.so.'
+    )
+  }
+}
+
 def verifyNativeCodecSources = tasks.register('verifyNativeCodecSources') {
   group = 'verification'
   description = 'Verifies pinned source-only native codec provenance and exclusions.'
+
+  dependsOn verifyNativePageSizeLinking
 
   doLast {
     def thirdPartyDir = file('src/main/cpp/third_party')

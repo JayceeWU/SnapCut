@@ -4,6 +4,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
 import { NavigationBar } from 'expo-navigation-bar';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { colors } from '@/constants';
 import { diagnosticLog } from '@/diagnostics';
@@ -53,7 +54,7 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <>
+    <GestureHandlerRootView style={{ flex: 1 }}>
       <StatusBar style="light" />
       <NavigationBar style="dark" />
       <Stack
@@ -63,6 +64,6 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: colors.background },
         }}
       />
-    </>
+    </GestureHandlerRootView>
   );
 }

@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import {
   CURRENT_PROJECT_SCHEMA_VERSION,
+  FADE_DURATION_STEP_MS,
+  MAX_FADE_DURATION_MS,
   MAX_PROJECT_NAME_CODE_POINTS,
   PROJECT_INDEX_SCHEMA_VERSION,
   SOURCE_FILE_SCHEMA_VERSION,
@@ -62,6 +64,28 @@ export const sourceKindSchema = z.enum([
 
 export const aacProfileSchema = z.enum(['aac-lc', 'he-aac-v1', 'he-aac-v2']).nullable();
 export const waveformStatusSchema = z.enum(['pending', 'processing', 'ready', 'failed']);
+export const trackIdSchema = z.enum(['track-1', 'track-2']);
+const legacyTrackCountSchema = z.union([z.literal(1), z.literal(2)]);
+export const trackCountSchema = z.literal(2);
+const legacyFadeDurationMsSchema = z.union([
+  z.literal(0),
+  z.literal(500),
+  z.literal(1_000),
+  z.literal(1_500),
+  z.literal(2_000),
+  z.literal(3_000),
+  z.literal(4_000),
+]);
+export const fadeDurationMsSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(MAX_FADE_DURATION_MS)
+  .refine(Number.isSafeInteger, 'Fade duration must be a safe integer')
+  .refine(
+    (value) => value % FADE_DURATION_STEP_MS === 0,
+    `Fade duration must use ${FADE_DURATION_STEP_MS} millisecond steps`,
+  );
 export const channelCountSchema = z.union([z.literal(1), z.literal(2)]);
 export const pcmBitsPerSampleSchema = z
   .union([z.literal(8), z.literal(16), z.literal(24), z.literal(32)])
@@ -118,7 +142,7 @@ export const snapCutSourceSchema = z
     }
   });
 
-export const snapCutClipSchema = z
+export const snapCutClipV1Schema = z
   .object({
     id: uuidSchema,
     sourceId: uuidSchema,
@@ -136,9 +160,60 @@ export const snapCutClipSchema = z
     }
   });
 
+function refineTimelineClip(
+  clip: {
+    startMs: number;
+    endMs: number;
+    timelineStartMs: number;
+    fadeInMs: number;
+    fadeOutMs: number;
+  },
+  context: z.RefinementCtx,
+): void {
+  if (clip.fadeInMs + clip.fadeOutMs > clip.endMs - clip.startMs) {
+    context.addIssue({
+      code: 'custom',
+      path: ['fadeOutMs'],
+      message: 'Fade-in and fade-out cannot exceed the clip duration',
+    });
+  }
+  if (!Number.isSafeInteger(clip.timelineStartMs + clip.endMs - clip.startMs)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['timelineStartMs'],
+      message: 'Clip timeline end must be a safe integer',
+    });
+  }
+}
+
+const timelineClipShape = {
+  trackId: trackIdSchema,
+  timelineStartMs: integerMillisecondsSchema,
+  gain: z.number().finite().min(0).max(1),
+};
+
+export const snapCutClipV5Schema = snapCutClipV1Schema
+  .extend({
+    ...timelineClipShape,
+    fadeInMs: legacyFadeDurationMsSchema,
+    fadeOutMs: legacyFadeDurationMsSchema,
+  })
+  .strict()
+  .superRefine(refineTimelineClip);
+
+export const snapCutClipSchema = snapCutClipV1Schema
+  .extend({
+    ...timelineClipShape,
+    fadeInMs: fadeDurationMsSchema,
+    fadeOutMs: fadeDurationMsSchema,
+  })
+  .strict()
+  .superRefine(refineTimelineClip);
+
 export const snapCutExportFormatSchema = z.enum(['m4a', 'flac', 'mp3']);
 export const snapCutExportModeSchema = z.enum([
   'aac-stream-copy',
+  'aac-lossy-encode',
   'flac-lossless-encode',
   'mp3-lossy-encode',
 ]);
@@ -154,20 +229,20 @@ export const snapCutExportRecordSchema = z
     actualDurationMs: positiveIntegerMillisecondsSchema,
     sampleRateHz: positiveIntegerSchema,
     channelCount: channelCountSchema,
-    bitrateKbps: z.literal(320).nullable(),
+    bitrateKbps: z.union([z.literal(160), z.literal(320)]).nullable(),
     bitsPerSample: z.literal(24).nullable(),
     maxBoundaryAdjustmentMs: integerMillisecondsSchema,
     fileSizeBytes: positiveIntegerSchema,
   })
   .strict()
   .superRefine((record, context) => {
-    const expectedMode = {
-      m4a: 'aac-stream-copy',
-      flac: 'flac-lossless-encode',
-      mp3: 'mp3-lossy-encode',
-    }[record.format];
+    const modeMatchesFormat =
+      (record.format === 'm4a' &&
+        (record.mode === 'aac-stream-copy' || record.mode === 'aac-lossy-encode')) ||
+      (record.format === 'flac' && record.mode === 'flac-lossless-encode') ||
+      (record.format === 'mp3' && record.mode === 'mp3-lossy-encode');
 
-    if (record.mode !== expectedMode) {
+    if (!modeMatchesFormat) {
       context.addIssue({
         code: 'custom',
         path: ['mode'],
@@ -175,10 +250,24 @@ export const snapCutExportRecordSchema = z
       });
     }
 
-    if (record.format === 'm4a' && (record.bitrateKbps !== null || record.bitsPerSample !== null)) {
+    if (
+      record.mode === 'aac-stream-copy' &&
+      (record.bitrateKbps !== null || record.bitsPerSample !== null)
+    ) {
       context.addIssue({
         code: 'custom',
         message: 'M4A stream-copy records cannot claim an encoder bitrate or PCM bit depth',
+      });
+    }
+
+    if (
+      record.mode === 'aac-lossy-encode' &&
+      (record.bitsPerSample !== null ||
+        record.bitrateKbps !== (record.channelCount === 1 ? 160 : 320))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Re-encoded AAC records require the fixed channel-specific bitrate',
       });
     }
 
@@ -196,7 +285,7 @@ export const snapCutExportRecordSchema = z
       });
     }
 
-    if (record.format !== 'm4a' && record.maxBoundaryAdjustmentMs !== 0) {
+    if (record.mode !== 'aac-stream-copy' && record.maxBoundaryAdjustmentMs !== 0) {
       context.addIssue({
         code: 'custom',
         path: ['maxBoundaryAdjustmentMs'],
@@ -209,7 +298,15 @@ interface ProjectRelationShape {
   createdAt: string;
   updatedAt: string;
   sources: { id: string; durationMs: number }[];
-  clips: { id: string; sourceId: string; startMs: number; endMs: number }[];
+  clips: {
+    id: string;
+    sourceId: string;
+    startMs: number;
+    endMs: number;
+    trackId?: 'track-1' | 'track-2';
+    timelineStartMs?: number;
+  }[];
+  trackCount?: 1 | 2;
 }
 
 function refineProjectRelations(project: ProjectRelationShape, context: z.RefinementCtx): void {
@@ -270,6 +367,40 @@ function refineProjectRelations(project: ProjectRelationShape, context: z.Refine
         message: 'Clip duration must be at least 100 milliseconds',
       });
     }
+
+    if (clip.trackId !== undefined && clip.timelineStartMs !== undefined) {
+      if (project.trackCount === 1 && clip.trackId !== 'track-1') {
+        context.addIssue({
+          code: 'custom',
+          path: ['clips', index, 'trackId'],
+          message: 'Track 2 cannot be used until it is added to the project',
+        });
+      }
+      const clipTimelineEndMs = clip.timelineStartMs + clip.endMs - clip.startMs;
+      if (!Number.isSafeInteger(clipTimelineEndMs)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['clips', index, 'timelineStartMs'],
+          message: 'Clip timeline end must be a safe integer',
+        });
+      }
+      for (let otherIndex = 0; otherIndex < index; otherIndex += 1) {
+        const other = project.clips[otherIndex];
+        if (
+          other?.trackId === clip.trackId &&
+          other.timelineStartMs !== undefined &&
+          clip.timelineStartMs < other.timelineStartMs + other.endMs - other.startMs &&
+          other.timelineStartMs < clipTimelineEndMs
+        ) {
+          context.addIssue({
+            code: 'custom',
+            path: ['clips', index, 'timelineStartMs'],
+            message: 'Clips on the same track cannot overlap',
+          });
+          break;
+        }
+      }
+    }
   }
 }
 
@@ -278,7 +409,6 @@ const projectCommonShape = {
   name: projectNameSchema,
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
-  clips: z.array(snapCutClipSchema),
   lastExport: snapCutExportRecordSchema.nullable(),
 };
 
@@ -286,6 +416,7 @@ export const snapCutProjectV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     ...projectCommonShape,
+    clips: z.array(snapCutClipV1Schema),
     sources: z.array(snapCutSourceV1Schema),
   })
   .strict()
@@ -295,6 +426,42 @@ export const snapCutProjectV2Schema = z
   .object({
     schemaVersion: z.literal(2),
     ...projectCommonShape,
+    clips: z.array(snapCutClipV1Schema),
+    sources: z.array(snapCutSourceSchema),
+  })
+  .strict()
+  .superRefine(refineProjectRelations);
+
+export const snapCutProjectV3Schema = z
+  .object({
+    schemaVersion: z.literal(3),
+    ...projectCommonShape,
+    clips: z.array(snapCutClipV1Schema),
+    namePromptCompleted: z.boolean(),
+    sources: z.array(snapCutSourceSchema),
+  })
+  .strict()
+  .superRefine(refineProjectRelations);
+
+export const snapCutProjectV4Schema = z
+  .object({
+    schemaVersion: z.literal(4),
+    ...projectCommonShape,
+    trackCount: legacyTrackCountSchema,
+    clips: z.array(snapCutClipV5Schema),
+    namePromptCompleted: z.boolean(),
+    sources: z.array(snapCutSourceSchema),
+  })
+  .strict()
+  .superRefine(refineProjectRelations);
+
+export const snapCutProjectV5Schema = z
+  .object({
+    schemaVersion: z.literal(5),
+    ...projectCommonShape,
+    trackCount: trackCountSchema,
+    clips: z.array(snapCutClipV5Schema),
+    namePromptCompleted: z.boolean(),
     sources: z.array(snapCutSourceSchema),
   })
   .strict()
@@ -304,6 +471,8 @@ export const snapCutProjectSchema = z
   .object({
     schemaVersion: z.literal(CURRENT_PROJECT_SCHEMA_VERSION),
     ...projectCommonShape,
+    trackCount: trackCountSchema,
+    clips: z.array(snapCutClipSchema),
     namePromptCompleted: z.boolean(),
     sources: z.array(snapCutSourceSchema),
   })
@@ -536,6 +705,7 @@ export const m4aExportPlanSchema = z
 export const exportFormatAvailabilitySchema = z
   .object({
     format: snapCutExportFormatSchema,
+    mode: snapCutExportModeSchema.nullable(),
     available: z.boolean(),
     reasons: z.array(nonEmptyStringSchema),
     estimatedOutputBytes: positiveIntegerSchema.nullable(),
@@ -545,6 +715,26 @@ export const exportFormatAvailabilitySchema = z
   })
   .strict()
   .superRefine((availability, context) => {
+    const validMode =
+      availability.mode === null ||
+      (availability.format === 'm4a' &&
+        (availability.mode === 'aac-stream-copy' || availability.mode === 'aac-lossy-encode')) ||
+      (availability.format === 'flac' && availability.mode === 'flac-lossless-encode') ||
+      (availability.format === 'mp3' && availability.mode === 'mp3-lossy-encode');
+    if (!validMode) {
+      context.addIssue({
+        code: 'custom',
+        path: ['mode'],
+        message: 'Availability mode must match its export format',
+      });
+    }
+    if (availability.available !== (availability.mode !== null)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['mode'],
+        message: 'Availability mode must be present exactly when the format is available',
+      });
+    }
     if (availability.available && availability.reasons.length > 0) {
       context.addIssue({
         code: 'custom',
@@ -566,6 +756,7 @@ export const exportPreflightResultSchema = z
     preferredFormat: z.enum(['m4a', 'flac']),
     m4aPlan: m4aExportPlanSchema,
     formats: z.array(exportFormatAvailabilitySchema).length(3),
+    mayClip: z.boolean(),
   })
   .strict()
   .superRefine((result, context) => {
@@ -577,12 +768,13 @@ export const exportPreflightResultSchema = z
         message: 'Preflight must include each format once',
       });
     }
-    const expected = result.m4aPlan.eligible ? 'm4a' : 'flac';
+    const m4aAvailable = result.formats.find(({ format }) => format === 'm4a')?.available === true;
+    const expected = m4aAvailable ? 'm4a' : 'flac';
     if (result.preferredFormat !== expected) {
       context.addIssue({
         code: 'custom',
         path: ['preferredFormat'],
-        message: 'Preferred format must follow M4A eligibility',
+        message: 'Preferred format must follow M4A format availability',
       });
     }
   });

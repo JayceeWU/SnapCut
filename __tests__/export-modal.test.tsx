@@ -34,10 +34,12 @@ describe('ExportModal', () => {
       );
     useExportStore.getState().preflightReady({
       preferredFormat: 'flac',
+      mayClip: false,
       m4aPlan: unavailablePlan,
       formats: [
         {
           format: 'm4a',
+          mode: null,
           available: false,
           reasons: ['AAC stream copy is unavailable for this composition.'],
           estimatedOutputBytes: null,
@@ -47,6 +49,7 @@ describe('ExportModal', () => {
         },
         {
           format: 'flac',
+          mode: 'flac-lossless-encode',
           available: true,
           reasons: [],
           estimatedOutputBytes: 2_000_000,
@@ -56,6 +59,7 @@ describe('ExportModal', () => {
         },
         {
           format: 'mp3',
+          mode: 'mp3-lossy-encode',
           available: true,
           reasons: [],
           estimatedOutputBytes: 500_000,
@@ -96,6 +100,7 @@ describe('ExportModal', () => {
       );
     useExportStore.getState().preflightReady({
       preferredFormat: 'm4a',
+      mayClip: true,
       m4aPlan: {
         ...unavailablePlan,
         eligible: true,
@@ -109,6 +114,7 @@ describe('ExportModal', () => {
       formats: [
         {
           format: 'm4a',
+          mode: 'aac-stream-copy',
           available: true,
           reasons: [],
           estimatedOutputBytes: 400_000,
@@ -118,6 +124,7 @@ describe('ExportModal', () => {
         },
         {
           format: 'flac',
+          mode: 'flac-lossless-encode',
           available: true,
           reasons: [],
           estimatedOutputBytes: 2_000_000,
@@ -127,6 +134,7 @@ describe('ExportModal', () => {
         },
         {
           format: 'mp3',
+          mode: 'mp3-lossy-encode',
           available: true,
           reasons: [],
           estimatedOutputBytes: 500_000,
@@ -149,6 +157,7 @@ describe('ExportModal', () => {
     );
 
     expect(screen.getByText(copy.export.m4aBoundaryAdjustment(12))).toBeTruthy();
+    expect(screen.getByText(copy.export.mixClippingWarning)).toBeTruthy();
     expect(screen.getByText(copy.export.flacSourceCaveat)).toBeTruthy();
   });
 

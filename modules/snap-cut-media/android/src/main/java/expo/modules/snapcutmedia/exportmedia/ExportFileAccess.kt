@@ -7,9 +7,11 @@ import expo.modules.snapcutmedia.errors.SnapCutMediaError
 import expo.modules.snapcutmedia.errors.mediaError
 import expo.modules.snapcutmedia.jobs.NativeJobResource
 import expo.modules.snapcutmedia.models.NativePreviewClip
+import expo.modules.snapcutmedia.models.TrackId
 import expo.modules.snapcutmedia.source.CancellationCheck
 import expo.modules.snapcutmedia.source.MediaResourceHooks
 import expo.modules.snapcutmedia.storage.PrivateOutputUri
+import expo.modules.snapcutmedia.timeline.TimelineAudio
 import java.io.Closeable
 import java.io.File
 import java.io.FileInputStream
@@ -21,8 +23,16 @@ internal data class ResolvedExportClip(
   val sourceId: String,
   val file: File,
   val startMs: Long,
-  val endMs: Long
-)
+  val endMs: Long,
+  val trackId: TrackId,
+  val timelineStartMs: Long,
+  val gain: Double,
+  val fadeInMs: Long,
+  val fadeOutMs: Long
+) {
+  val durationMs: Long get() = endMs - startMs
+  val timelineEndMs: Long get() = Math.addExact(timelineStartMs, durationMs)
+}
 
 internal object ExportFileAccess {
   private val SAFE_JOB_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -31,17 +41,16 @@ internal object ExportFileAccess {
     clips: List<NativePreviewClip>,
     projectRoots: Collection<File>
   ): List<ResolvedExportClip> {
-    if (clips.isEmpty()) throw mediaError(SnapCutMediaError.EXPORT_EMPTY_COMPOSITION)
+    val orderedClips = TimelineAudio.validate(clips)
     val clipIds = hashSetOf<String>()
     val sourceFiles = hashMapOf<String, String>()
-    return clips.map { clip ->
+    return orderedClips.map { clip ->
       if (
         clip.clipId.isBlank() ||
         clip.sourceId.isBlank() ||
         !clipIds.add(clip.clipId) ||
         clip.startMs < 0L ||
-        clip.endMs <= clip.startMs ||
-        clip.endMs - clip.startMs < MINIMUM_CLIP_DURATION_MS
+        clip.endMs <= clip.startMs
       ) {
         throw mediaError(SnapCutMediaError.INVALID_CLIP_RANGE)
       }
@@ -58,7 +67,12 @@ internal object ExportFileAccess {
         clip.sourceId,
         file,
         clip.startMs,
-        clip.endMs
+        clip.endMs,
+        clip.trackId,
+        clip.timelineStartMs,
+        clip.gain,
+        clip.fadeInMs,
+        clip.fadeOutMs
       )
     }
   }
@@ -117,7 +131,6 @@ internal object ExportFileAccess {
   }
 
   private const val HASH_BUFFER_BYTES = 64 * 1024
-  private const val MINIMUM_CLIP_DURATION_MS = 100L
 }
 
 internal class ExportExtractorResource(

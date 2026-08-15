@@ -3,11 +3,13 @@ import { z } from 'zod';
 
 import {
   exportPreflightResultSchema,
+  fadeDurationMsSchema,
   m4aExportPlanSchema,
   snapCutExportFormatSchema,
   snapCutExportModeSchema,
   sourceKindSchema,
 } from '@/domain';
+import type { FadeDurationMs } from '@/domain';
 import type { NativeEventMap, SnapCutMediaEventApi } from './SnapCutMedia.events';
 import {
   SNAP_CUT_MEDIA_ERROR_CODES,
@@ -16,6 +18,7 @@ import {
   type ImportResult,
   type NativeEventName,
   type NativeHealth,
+  type NativePreviewClip,
   type PickedSource,
   type PrivateMediaVerificationResult,
   type SnapCutMediaApi,
@@ -44,7 +47,9 @@ const sourceUri = z
   );
 const contentUri = z.string().regex(/^content:\/\/[^\s]+$/u);
 const nonEmptyId = z.string().trim().min(1);
-
+const nativeFadeDurationMsSchema = fadeDurationMsSchema.transform(
+  (value): FadeDurationMs => value as FadeDurationMs,
+);
 const inspectSourceRequestSchema = z
   .object({
     jobId: nonEmptyId,
@@ -63,28 +68,54 @@ const importSourceRequestSchema = z
     maxSourceBytes: positiveInteger,
   })
   .strict();
-const nativePreviewClipSchema = z
+const nativePreviewClipSchema: z.ZodType<NativePreviewClip> = z
   .object({
     clipId: nonEmptyId,
     sourceId: nonEmptyId,
     audioFileUri: fileUri,
     startMs: nonNegativeInteger,
     endMs: positiveInteger,
+    trackId: z.enum(['track-1', 'track-2']),
+    timelineStartMs: nonNegativeInteger,
+    gain: z.number().finite().min(0).max(1),
+    fadeInMs: nativeFadeDurationMsSchema,
+    fadeOutMs: nativeFadeDurationMsSchema,
   })
   .strict()
-  .refine((clip) => clip.endMs - clip.startMs >= 100, 'Clip range must be at least 100 ms');
+  .superRefine((clip, context) => {
+    const durationMs = clip.endMs - clip.startMs;
+    if (durationMs < 100) {
+      context.addIssue({
+        code: 'custom',
+        path: ['endMs'],
+        message: 'Clip range must be at least 100 ms',
+      });
+    }
+    if (clip.fadeInMs + clip.fadeOutMs > durationMs) {
+      context.addIssue({
+        code: 'custom',
+        path: ['fadeOutMs'],
+        message: 'Clip fades cannot exceed the clip duration',
+      });
+    }
+  });
 const loadPreviewRequestSchema = z
   .object({
     playbackSessionId: nonEmptyId,
     generation: nonNegativeInteger,
+    controlRevision: nonNegativeInteger,
     clips: z.array(nativePreviewClipSchema).min(1),
   })
   .strict();
 const previewCommandRequestSchema = z
-  .object({ playbackSessionId: nonEmptyId, generation: nonNegativeInteger })
+  .object({
+    playbackSessionId: nonEmptyId,
+    generation: nonNegativeInteger,
+    controlRevision: nonNegativeInteger,
+  })
   .strict();
 const seekPreviewRequestSchema = previewCommandRequestSchema
-  .extend({ positionMs: nonNegativeInteger })
+  .extend({ positionMs: nonNegativeInteger, resumeAfterSeek: z.boolean() })
   .strict();
 const exportPreflightRequestSchema = z
   .object({
@@ -121,17 +152,25 @@ const exportAudioRequestSchema = z
   .strict()
   .superRefine((request, context) => {
     if (request.format === 'm4a') {
-      if (request.m4aPlan === null || !request.m4aPlan.eligible) {
+      const streamCopy = request.m4aPlan?.eligible === true;
+      const aacEncode =
+        request.m4aPlan === null &&
+        request.outputSampleRateHz !== null &&
+        request.outputChannelCount !== null;
+      if (!streamCopy && !aacEncode) {
         context.addIssue({
           code: 'custom',
           path: ['m4aPlan'],
-          message: 'M4A export requires an eligible immutable plan',
+          message: 'M4A export requires either a stream-copy plan or AAC output settings',
         });
       }
-      if (request.outputSampleRateHz !== null || request.outputChannelCount !== null) {
+      if (
+        streamCopy &&
+        (request.outputSampleRateHz !== null || request.outputChannelCount !== null)
+      ) {
         context.addIssue({
           code: 'custom',
-          message: 'M4A export takes rate and channels from the immutable plan',
+          message: 'M4A stream copy takes rate and channels from its plan',
         });
       }
     } else {
@@ -233,7 +272,7 @@ const exportAudioResultSchema = z
     actualDurationMs: positiveInteger,
     sampleRateHz: positiveInteger,
     channelCount,
-    bitrateKbps: z.literal(320).nullable(),
+    bitrateKbps: z.union([z.literal(160), z.literal(320)]).nullable(),
     bitsPerSample: z.literal(24).nullable(),
     maxBoundaryAdjustmentMs: nonNegativeInteger,
     fileSizeBytes: positiveInteger,
@@ -259,6 +298,7 @@ const playbackStatusEventSchema = z
   .object({
     ...baseJobEventShape,
     playbackSessionId: z.string().trim().min(1),
+    controlRevision: nonNegativeInteger,
     mode: z.enum(['selection', 'composition']),
     loaded: z.boolean(),
     playing: z.boolean(),

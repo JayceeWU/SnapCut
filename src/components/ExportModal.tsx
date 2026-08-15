@@ -21,7 +21,7 @@ import {
   spacing,
   typography,
 } from '@/constants';
-import { validateExportBaseName, type SnapCutExportFormat } from '@/domain';
+import { validateExportBaseName, type SnapCutExportFormat, type SnapCutExportMode } from '@/domain';
 import { useExportStore } from '@/stores';
 import { AppButton } from './AppButton';
 import { ErrorBanner } from './ErrorBanner';
@@ -40,6 +40,9 @@ const formatLabels: Record<SnapCutExportFormat, string> = {
   flac: copy.export.flac,
   mp3: copy.export.mp3,
 };
+
+const formatLabel = (format: SnapCutExportFormat, mode: SnapCutExportMode | null): string =>
+  format === 'm4a' && mode === 'aac-lossy-encode' ? copy.export.m4aReencoded : formatLabels[format];
 
 function KeepAwakeGuard() {
   useKeepAwake('SnapCut export');
@@ -119,11 +122,17 @@ export function ExportModal({
                 ) : null}
 
                 <Text style={styles.fieldLabel}>{copy.export.formatLabel}</Text>
+                {preflight.mayClip ? (
+                  <Text accessibilityLiveRegion="polite" style={styles.validation}>
+                    {copy.export.mixClippingWarning}
+                  </Text>
+                ) : null}
                 {preflight.formats.map((format) => {
                   const selected = selectedFormat === format.format;
+                  const label = formatLabel(format.format, format.mode);
                   return (
                     <Pressable
-                      accessibilityLabel={formatLabels[format.format]}
+                      accessibilityLabel={label}
                       accessibilityRole="radio"
                       accessibilityState={{ checked: selected, disabled: !format.available }}
                       disabled={!format.available || busy}
@@ -140,7 +149,7 @@ export function ExportModal({
                         <Text
                           style={[styles.formatTitle, !format.available && styles.disabledText]}
                         >
-                          {formatLabels[format.format]}
+                          {label}
                         </Text>
                         <View style={[styles.radio, selected && styles.radioSelected]} />
                       </View>
@@ -156,6 +165,7 @@ export function ExportModal({
                             </Text>
                           ) : null}
                           {format.format === 'm4a' &&
+                          format.mode === 'aac-stream-copy' &&
                           preflight.m4aPlan.maxBoundaryAdjustmentMs > 0 ? (
                             <Text style={styles.formatDetail}>
                               {copy.export.m4aBoundaryAdjustment(
@@ -206,12 +216,12 @@ export function ExportModal({
                   {copy.export.successMessage(result.displayName)}
                 </Text>
                 <Text style={styles.formatDetail}>
-                  {formatLabels[result.format]} · {formatBytes(result.fileSizeBytes)}
+                  {formatLabel(result.format, result.mode)} · {formatBytes(result.fileSizeBytes)}
                 </Text>
                 <Text style={styles.formatDetail}>
                   {copy.export.successDuration(formatDuration(result.actualDurationMs))}
                 </Text>
-                {result.format === 'm4a' ? (
+                {result.mode === 'aac-stream-copy' ? (
                   <Text style={styles.formatDetail}>
                     {copy.export.successBoundaryAdjustment(result.maxBoundaryAdjustmentMs)}
                   </Text>

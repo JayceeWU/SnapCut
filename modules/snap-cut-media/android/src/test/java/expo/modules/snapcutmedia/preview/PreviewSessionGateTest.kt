@@ -36,8 +36,33 @@ class PreviewSessionGateTest {
 
     assertNull(gate.begin("", 1L))
     assertNull(gate.begin("session", -1L))
+    assertNull(gate.begin("session", 1L, -1L))
     assertTrue(gate.begin("before-destroy", 20L) != null)
     gate.clear()
     assertTrue(gate.begin("after-destroy", 0L) != null)
+  }
+
+  @Test
+  fun `control revisions reject stale commands and allow one intent to seek then play`() {
+    val gate = PreviewSessionGate()
+    val token = gate.begin("session", 3L, 4L)!!
+
+    assertEquals(4L, gate.currentControlRevision(token))
+    assertTrue(gate.acceptControl(token, 5L))
+    assertTrue(gate.acceptControl(token, 5L))
+    assertFalse(gate.acceptControl(token, 4L))
+    assertNull(gate.begin("session", 3L, 4L))
+    assertEquals(5L, gate.currentControlRevision(token))
+  }
+
+  @Test
+  fun `native interruption advances the active control revision only`() {
+    val gate = PreviewSessionGate()
+    val stale = gate.begin("stale", 1L, 2L)!!
+    val current = gate.begin("current", 2L, 7L)!!
+
+    assertNull(gate.advanceControl(stale))
+    assertEquals(8L, gate.advanceControl(current))
+    assertEquals(8L, gate.currentControlRevision(current))
   }
 }

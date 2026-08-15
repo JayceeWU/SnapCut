@@ -1,4 +1,5 @@
 import { fireEvent, render } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 
 import {
   AppButton,
@@ -13,7 +14,8 @@ import { copy } from '@/constants';
 import type { SnapCutProject } from '@/domain';
 
 const projectFixture: SnapCutProject = {
-  schemaVersion: 3,
+  schemaVersion: 6,
+  trackCount: 2,
   namePromptCompleted: true,
   id: '11111111-1111-4111-8111-111111111111',
   name: 'Repair me',
@@ -78,44 +80,58 @@ describe('shared UI components', () => {
     expect(onSubmit).toHaveBeenCalledWith('Purple Session');
   });
 
-  it('renders native-clock playback state and forwards seek commands', async () => {
-    const onSeek = jest.fn();
+  it('renders compact native-clock playback state and session history actions', async () => {
+    const onUndo = jest.fn();
+    const onRedo = jest.fn();
     const screen = await render(
       <PlaybackControls
-        activeMode="selection"
         available
+        canRedo={false}
+        canUndo
+        compositionAvailable
         disabled={false}
         durationMs={12_000}
-        loaded
         loading={false}
-        mode="selection"
-        onSeek={onSeek}
-        onToggle={jest.fn()}
+        onPause={jest.fn()}
+        onPlay={jest.fn()}
+        onRedo={onRedo}
+        onUndo={onUndo}
         playing
         positionMs={2_000}
         unavailableHint="Unavailable"
       />,
     );
 
-    expect(screen.getByRole('button', { name: copy.editor.selectionPauseAction })).toBeTruthy();
+    expect(screen.getByRole('button', { name: copy.editor.compositionPauseAction })).toBeTruthy();
+    expect(
+      StyleSheet.flatten(screen.getByTestId('composition-transport').props.style),
+    ).toMatchObject({ height: 48 });
     expect(screen.getByText(copy.editor.playbackPosition('0:02', '0:12'))).toBeTruthy();
-    await fireEvent.press(screen.getByRole('button', { name: copy.editor.seekForward }));
-    expect(onSeek).toHaveBeenCalledWith(7_000);
+    expect(screen.queryByText(copy.editor.seekBackward)).toBeNull();
+    expect(screen.queryByText(copy.editor.seekForward)).toBeNull();
+    await fireEvent.press(screen.getByRole('button', { name: copy.editor.undoAction }));
+    expect(onUndo).toHaveBeenCalledTimes(1);
+    const redo = screen.getByRole('button', { name: copy.editor.redoAction });
+    expect(redo).toBeDisabled();
+    await fireEvent.press(redo);
+    expect(onRedo).not.toHaveBeenCalled();
   });
 
   it('keeps preview disabled when the native media pipeline is unavailable', async () => {
-    const onToggle = jest.fn();
+    const onPlay = jest.fn();
     const screen = await render(
       <PlaybackControls
-        activeMode={null}
         available={false}
+        canRedo={false}
+        canUndo={false}
+        compositionAvailable={false}
         disabled={false}
         durationMs={0}
-        loaded={false}
         loading={false}
-        mode="composition"
-        onSeek={jest.fn()}
-        onToggle={onToggle}
+        onPause={jest.fn()}
+        onPlay={onPlay}
+        onRedo={jest.fn()}
+        onUndo={jest.fn()}
         playing={false}
         positionMs={0}
         unavailableHint={copy.editor.compositionPreviewUnavailable}
@@ -124,8 +140,65 @@ describe('shared UI components', () => {
 
     const button = screen.getByRole('button', { name: copy.editor.compositionPlayAction });
     expect(button).toBeDisabled();
+    expect(button.props.accessibilityHint).toBe(copy.editor.compositionPreviewUnavailable);
     await fireEvent.press(button);
-    expect(onToggle).not.toHaveBeenCalled();
+    expect(onPlay).not.toHaveBeenCalled();
+  });
+
+  it('keeps Pause immediately actionable while composition loading is in progress', async () => {
+    const onPause = jest.fn();
+    const screen = await render(
+      <PlaybackControls
+        available
+        canRedo={false}
+        canUndo={false}
+        compositionAvailable
+        disabled={false}
+        durationMs={12_000}
+        loading
+        onPause={onPause}
+        onPlay={jest.fn()}
+        onRedo={jest.fn()}
+        onUndo={jest.fn()}
+        playing={false}
+        positionMs={2_000}
+        unavailableHint="Unavailable"
+      />,
+    );
+
+    const pause = screen.getByRole('button', { name: copy.editor.compositionPauseAction });
+    expect(pause).not.toBeDisabled();
+    await fireEvent.press(pause);
+    expect(onPause).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps history available when undo or redo produces an empty timeline', async () => {
+    const onUndo = jest.fn();
+    const onRedo = jest.fn();
+    const screen = await render(
+      <PlaybackControls
+        available
+        canRedo
+        canUndo
+        compositionAvailable={false}
+        disabled={false}
+        durationMs={0}
+        loading={false}
+        onPause={jest.fn()}
+        onPlay={jest.fn()}
+        onRedo={onRedo}
+        onUndo={onUndo}
+        playing={false}
+        positionMs={0}
+        unavailableHint="Unavailable"
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: copy.editor.compositionPlayAction })).toBeDisabled();
+    await fireEvent.press(screen.getByRole('button', { name: copy.editor.undoAction }));
+    await fireEvent.press(screen.getByRole('button', { name: copy.editor.redoAction }));
+    expect(onUndo).toHaveBeenCalledTimes(1);
+    expect(onRedo).toHaveBeenCalledTimes(1);
   });
 
   it('keeps repair projects visible but prevents opening invalid media', async () => {

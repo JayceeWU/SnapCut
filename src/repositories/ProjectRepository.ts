@@ -1,5 +1,6 @@
 import { randomUUID } from 'expo-crypto';
 
+import { addFullSourceClip } from '@/domain/clips';
 import { addSource, buildProjectIndex, createProject, renameProject } from '@/domain/projects';
 import { parseSnapCutProject } from '@/domain/migrations';
 import { diagnosticLog } from '@/diagnostics';
@@ -425,7 +426,15 @@ export class ProjectRepository {
         throw new ProjectRepositoryError('IMPORT_FILE_MISSING', 'The ready waveform is missing.');
       }
 
-      const updated = addSource(current, source, this.now());
+      const updatedAt = this.now();
+      const withSource = addSource(current, source, updatedAt);
+      const updated = addFullSourceClip(
+        withSource,
+        source.id,
+        input.clipId,
+        input.targetTrackId,
+        updatedAt,
+      );
       const journal: ImportTransactionJournal = importTransactionJournalSchema.parse({
         schemaVersion: 1,
         jobId: input.jobId,
@@ -693,6 +702,10 @@ export const projectRepository = new ProjectRepository({
   onRecoveryDiagnostic: (diagnostic) => {
     const projectId = 'projectId' in diagnostic ? diagnostic.projectId : undefined;
     const jobId = 'jobId' in diagnostic ? diagnostic.jobId : undefined;
+    const repairIssues =
+      diagnostic.code === 'PROJECT_NEEDS_REPAIR'
+        ? diagnostic.issues.join(',').slice(0, 80)
+        : undefined;
     void diagnosticLog.append(
       diagnostic.code === 'INDEX_REBUILT' ? 'info' : 'warn',
       'repository.recovery',
@@ -701,6 +714,7 @@ export const projectRepository = new ProjectRepository({
         code: diagnostic.code,
         ...(projectId === undefined ? {} : { projectId }),
         ...(jobId === undefined ? {} : { jobId }),
+        ...(repairIssues === undefined ? {} : { repairIssues }),
       },
     );
   },

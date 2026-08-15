@@ -23,7 +23,8 @@ function flushTasks(): Promise<void> {
 
 function project(): SnapCutProject {
   return {
-    schemaVersion: 3,
+    schemaVersion: 6,
+    trackCount: 2,
     namePromptCompleted: true,
     id: PROJECT_ID,
     name: 'Purple rehearsal',
@@ -53,7 +54,19 @@ function project(): SnapCutProject {
         createdAt: '2026-08-12T20:00:00.000Z',
       },
     ],
-    clips: [{ id: CLIP_ID, sourceId: SOURCE_ID, startMs: 1_000, endMs: 5_000 }],
+    clips: [
+      {
+        id: CLIP_ID,
+        sourceId: SOURCE_ID,
+        startMs: 1_000,
+        endMs: 5_000,
+        trackId: 'track-1',
+        timelineStartMs: 0,
+        gain: 1,
+        fadeInMs: 0,
+        fadeOutMs: 0,
+      },
+    ],
     lastExport: null,
   };
 }
@@ -61,6 +74,7 @@ function project(): SnapCutProject {
 function preflight(): ExportPreflightResult {
   return {
     preferredFormat: 'm4a',
+    mayClip: false,
     m4aPlan: {
       planVersion: 1,
       planId: '11111111-1111-4111-8111-111111111114',
@@ -98,6 +112,7 @@ function preflight(): ExportPreflightResult {
     formats: [
       {
         format: 'm4a',
+        mode: 'aac-stream-copy',
         available: true,
         reasons: [],
         estimatedOutputBytes: 80_000,
@@ -107,6 +122,7 @@ function preflight(): ExportPreflightResult {
       },
       {
         format: 'flac',
+        mode: 'flac-lossless-encode',
         available: true,
         reasons: [],
         estimatedOutputBytes: 800_000,
@@ -116,6 +132,7 @@ function preflight(): ExportPreflightResult {
       },
       {
         format: 'mp3',
+        mode: 'mp3-lossy-encode',
         available: true,
         reasons: [],
         estimatedOutputBytes: 160_000,
@@ -285,6 +302,29 @@ describe('ExportCoordinator', () => {
     resolveExport(exportResult);
     await pending;
     expect(useExportStore.getState().status).toBe('failed');
+  });
+
+  it('uses the absolute timeline end instead of summing clip durations', async () => {
+    const native = bridge();
+    const timelineProject = project();
+    timelineProject.clips = [
+      timelineProject.clips[0]!,
+      {
+        ...timelineProject.clips[0]!,
+        id: '11111111-1111-4111-8111-111111111116',
+        timelineStartMs: 7_000,
+      },
+    ];
+    const coordinator = new ExportCoordinator({
+      media: native.media,
+      sourceResolver: { resolveSourceAudioUri: () => 'file:///private/source.m4a' },
+      preview: { releaseProject: async () => undefined },
+      appState: new FakeAppState(),
+      idFactory: () => 'timeline-preflight',
+    });
+
+    await coordinator.prepare(timelineProject);
+    expect(useExportStore.getState().compositionDurationMs).toBe(11_000);
   });
 
   it('waits behind other heavy media work and does not start a cancelled queued preflight', async () => {

@@ -6,6 +6,7 @@ import expo.modules.snapcutmedia.errors.SnapCutMediaError
 import expo.modules.snapcutmedia.errors.mediaError
 import expo.modules.snapcutmedia.export.DecodedExportProgress
 import expo.modules.snapcutmedia.export.DecodedExportService
+import expo.modules.snapcutmedia.export.AacCompositionEncoder
 import expo.modules.snapcutmedia.models.ExportAudioRequest
 import expo.modules.snapcutmedia.models.ExportFormat
 import expo.modules.snapcutmedia.models.ExportPreflightRequest
@@ -31,13 +32,14 @@ internal class SnapCutExportServices(
     sourceInspector,
     projectRoots,
     planRegistry,
-    codecCapabilities = {
+    codecCapabilities = { outputRate, outputChannels ->
       val buildInfo = NativeCodecBridge.getBuildInfo()
       ExportPreflightService.conservativeCodecCapabilities(
         bridgeLoaded = buildInfo.bridgeLoaded,
         flacAvailable = buildInfo.flac.available,
         mp3Available = buildInfo.lame.available,
-        resamplerAvailable = buildInfo.libsamplerate.available
+        resamplerAvailable = buildInfo.libsamplerate.available,
+        aacAvailable = AacCompositionEncoder.isAvailable(outputRate, outputChannels)
       )
     }
   )
@@ -68,22 +70,22 @@ internal class SnapCutExportServices(
     progressSink: (ExportProgress) -> Unit
   ): Map<String, Any?> {
     exportCommitGate.begin(request.jobId, request.generation)
-    return when (request.format) {
-      ExportFormat.M4A -> m4a.export(
+    return when {
+      request.format == ExportFormat.M4A && request.m4aPlan?.eligible == true -> m4a.export(
         request,
         cancellation,
         hooks,
         progressSink,
         exportCommitGate.boundary(request.jobId, request.generation)
       ).toBridgeMap()
-      ExportFormat.FLAC,
-      ExportFormat.MP3 -> exportDecoded(
+      request.format in setOf(ExportFormat.M4A, ExportFormat.FLAC, ExportFormat.MP3) -> exportDecoded(
         request,
         cancellation,
         hooks,
         progressSink,
         exportCommitGate.boundary(request.jobId, request.generation)
       ).toBridgeMap()
+      else -> throw mediaError(SnapCutMediaError.EXPORT_FORMAT_UNAVAILABLE)
     }
   }
 
@@ -111,9 +113,7 @@ internal class SnapCutExportServices(
     ExportNaming.requireValidBaseName(request.displayNameWithoutExtension)
     val reporter = ExportProgressReporter(progressSink)
     val resolvedClips = ExportFileAccess.resolveClips(request.clips, projectRoots)
-    val requestedDurationMs = ExportMath.safeDurationSum(
-      resolvedClips.map { it.endMs - it.startMs }
-    )
+    val requestedDurationMs = resolvedClips.maxOf(ResolvedExportClip::timelineEndMs)
     val estimate = when (request.format) {
       ExportFormat.FLAC -> ExportMath.estimateFlacBytes(
         requestedDurationMs,
@@ -121,7 +121,8 @@ internal class SnapCutExportServices(
         request.outputChannelCount ?: throw mediaError(SnapCutMediaError.EXPORT_PREFLIGHT_FAILED)
       )
       ExportFormat.MP3 -> ExportMath.estimateMp3Bytes(requestedDurationMs)
-      ExportFormat.M4A -> throw mediaError(SnapCutMediaError.EXPORT_FORMAT_UNAVAILABLE)
+      ExportFormat.M4A -> ExportMath.estimateAacBytes(requestedDurationMs, request.outputChannelCount
+        ?: throw mediaError(SnapCutMediaError.EXPORT_PREFLIGHT_FAILED))
     }
     ExportFileAccess.requireFreeSpace(stagingRoot, ExportMath.requiredFreeBytes(estimate))
     var jobDirectory: File? = null
@@ -143,7 +144,7 @@ internal class SnapCutExportServices(
       val verificationError = when (request.format) {
         ExportFormat.FLAC -> SnapCutMediaError.FLAC_VERIFICATION_FAILED
         ExportFormat.MP3 -> SnapCutMediaError.MP3_VERIFICATION_FAILED
-        ExportFormat.M4A -> SnapCutMediaError.EXPORT_FORMAT_UNAVAILABLE
+        ExportFormat.M4A -> SnapCutMediaError.AAC_VERIFICATION_FAILED
       }
       if (
         staged.format != request.format ||
@@ -158,7 +159,10 @@ internal class SnapCutExportServices(
         (request.format == ExportFormat.FLAC &&
           (staged.bitrateKbps != null || staged.bitsPerSample != 24)) ||
         (request.format == ExportFormat.MP3 &&
-          (staged.bitrateKbps != 320 || staged.bitsPerSample != null))
+          (staged.bitrateKbps != 320 || staged.bitsPerSample != null)) ||
+        (request.format == ExportFormat.M4A &&
+          (staged.bitrateKbps != (if (staged.channelCount == 1) 160 else 320) ||
+            staged.bitsPerSample != null))
       ) {
         throw mediaError(verificationError)
       }
@@ -181,7 +185,7 @@ internal class SnapCutExportServices(
         mode = when (staged.format) {
           ExportFormat.FLAC -> "flac-lossless-encode"
           ExportFormat.MP3 -> "mp3-lossy-encode"
-          ExportFormat.M4A -> throw mediaError(SnapCutMediaError.EXPORT_FORMAT_UNAVAILABLE)
+          ExportFormat.M4A -> "aac-lossy-encode"
         },
         contentUri = published.contentUri,
         displayName = published.displayName,

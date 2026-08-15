@@ -4,13 +4,19 @@ import expo.modules.snapcutmedia.errors.SnapCutMediaError
 import expo.modules.snapcutmedia.errors.mediaError
 import expo.modules.snapcutmedia.models.M4aExportPlan
 import expo.modules.snapcutmedia.models.NativePreviewClip
+import expo.modules.snapcutmedia.models.TrackId
 
 internal data class ExportClipSignature(
   val clipId: String,
   val sourceId: String,
   val audioFileUri: String,
   val startMs: Long,
-  val endMs: Long
+  val endMs: Long,
+  val trackId: TrackId,
+  val timelineStartMs: Long,
+  val gain: Double,
+  val fadeInMs: Long,
+  val fadeOutMs: Long
 )
 
 /** Process-local capability registry. A plan is usable only if native preflight issued it. */
@@ -66,7 +72,12 @@ internal class M4aPlanRegistry(private val maximumProjects: Int = 16) {
     sourceId,
     audioFileUri,
     startMs,
-    endMs
+    endMs,
+    trackId,
+    timelineStartMs,
+    gain,
+    fadeInMs,
+    fadeOutMs
   )
 
   private fun M4aExportPlan.deepCopy(): M4aExportPlan = copy(

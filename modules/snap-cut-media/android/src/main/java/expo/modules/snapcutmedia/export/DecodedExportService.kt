@@ -34,7 +34,6 @@ internal class DecodedExportService(
   private val projectRoots: Collection<File>,
   private val stagingRoots: Collection<File>,
   private val sourceProbe: DecodedSourceProbe = DecodedSourceProbe(),
-  private val decoder: DecodedClipDecoder = DecodedClipDecoder(),
   private val encoderFactory: CompositionEncoderFactory = NativeCompositionEncoderFactory(),
   private val verifier: CompletedDecodedOutputVerifier = CompletedDecodedOutputVerifier()
 ) {
@@ -56,7 +55,7 @@ internal class DecodedExportService(
     val expectedSuffix = when (request.format) {
       ExportFormat.FLAC -> ".flac"
       ExportFormat.MP3 -> ".mp3"
-      ExportFormat.M4A -> throw mediaError(SnapCutMediaError.EXPORT_FORMAT_UNAVAILABLE)
+      ExportFormat.M4A -> ".m4a"
     }
     if (!output.name.endsWith(expectedSuffix, ignoreCase = true) || output.exists()) {
       throw mediaError(SnapCutMediaError.OUTPUT_WRITE_FAILED)
@@ -78,15 +77,11 @@ internal class DecodedExportService(
       request,
       clipDescriptors.map(DecodedSourceDescriptor::outputFormat)
     )
-    val requestedDurationMs = clips.fold(0L) { total, clip ->
-      Math.addExact(total, clip.endMs - clip.startMs)
-    }
-    val estimatedOutputFrames = clips.fold(0L) { total, clip ->
-      Math.addExact(
-        total,
-        ClipFrameMath.durationFrames(clip.endMs - clip.startMs, outputConfig.sampleRateHz)
-      )
-    }
+    val requestedDurationMs = clips.maxOf { it.timelineEndMs }
+    val estimatedOutputFrames = TimelinePcmMixer.timelineFrame(
+      requestedDurationMs,
+      outputConfig.sampleRateHz
+    )
 
     var ownsOutput = false
     try {
@@ -109,41 +104,22 @@ internal class DecodedExportService(
           hooks = hooks
         )
       ).use { encoder ->
-        ClipPcmTransformer(
-          outputRate = outputConfig.sampleRateHz,
+        TimelinePcmMixer().mix(
+          clips = clips,
+          descriptors = descriptors,
+          outputRateHz = outputConfig.sampleRateHz,
           outputChannels = outputConfig.channelCount,
-          resamplerFactory = NativeStatefulResamplerFactory(hooks),
+          cancellation = cancellation,
+          hooks = hooks,
           sink = FloatPcmSink { pcm, frames ->
             cancellation.throwIfCancelled()
             encoder.write(pcm, frames)
             writtenFrames = Math.addExact(writtenFrames, frames.toLong())
+          },
+          progress = { fraction ->
+            reporter.report("decoding", fraction)
           }
-        ).use { transformer ->
-          clips.forEachIndexed { index, clip ->
-            cancellation.throwIfCancelled()
-            var clipOpen = false
-            decoder.decode(
-              clip = clip,
-              descriptor = clipDescriptors[index],
-              cancellation = cancellation,
-              hooks = hooks,
-              onFormat = { format ->
-                if (clipOpen) throw mediaError(SnapCutMediaError.EXPORT_DECODE_FAILED)
-                transformer.beginClip(format.sampleRateHz, format.channelCount)
-                clipOpen = true
-              },
-              onPcm = { pcm, frames -> transformer.write(pcm, frames) },
-              onProgress = { clipFraction ->
-                reporter.report(
-                  "decoding",
-                  (index + clipFraction.coerceIn(0.0, 1.0)) / clips.size
-                )
-              }
-            )
-            if (!clipOpen) throw mediaError(SnapCutMediaError.EXPORT_DECODE_FAILED)
-            transformer.finishClip()
-          }
-        }
+        )
         cancellation.throwIfCancelled()
         reporter.report("encoding", 1.0, force = true)
         encoder.finish()
@@ -168,7 +144,11 @@ internal class DecodedExportService(
         actualDurationMs = verified.actualDurationMs,
         sampleRateHz = verified.sampleRateHz,
         channelCount = verified.channelCount,
-        bitrateKbps = if (request.format == ExportFormat.MP3) 320 else null,
+        bitrateKbps = when (request.format) {
+          ExportFormat.M4A -> if (outputConfig.channelCount == 1) 160 else 320
+          ExportFormat.MP3 -> 320
+          ExportFormat.FLAC -> null
+        },
         bitsPerSample = if (request.format == ExportFormat.FLAC) 24 else null,
         fileSizeBytes = verified.fileSizeBytes,
         outputPcmFrames = writtenFrames
@@ -180,7 +160,7 @@ internal class DecodedExportService(
       val mapped = when (request.format) {
         ExportFormat.FLAC -> SnapCutMediaError.FLAC_ENCODER_FAILED
         ExportFormat.MP3 -> SnapCutMediaError.MP3_ENCODER_FAILED
-        ExportFormat.M4A -> SnapCutMediaError.EXPORT_FORMAT_UNAVAILABLE
+        ExportFormat.M4A -> SnapCutMediaError.AAC_ENCODER_FAILED
       }
       throw mediaError(mapped)
     }

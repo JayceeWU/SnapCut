@@ -51,4 +51,32 @@ describe('ImportProgressModal', () => {
     await fireEvent.press(screen.getByRole('button', { name: copy.import.retryAction }));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
+
+  it('does not leave a Close action visible while the committed project reloads', async () => {
+    useImportStore.getState().replace({
+      generation: 2,
+      activeJobId: null,
+      projectId: null,
+      sourceId: null,
+      stage: 'complete',
+      fraction: 1,
+      failure: null,
+      lastImportedSourceId: 'source',
+    });
+    const screen = await render(
+      <ImportProgressModal onCancel={jest.fn()} onClose={jest.fn()} onRetry={jest.fn()} visible />,
+    );
+
+    expect(screen.queryByRole('button', { name: copy.import.closeAction })).toBeNull();
+    await screen.rerender(
+      <ImportProgressModal
+        completionCloseVisible
+        onCancel={jest.fn()}
+        onClose={jest.fn()}
+        onRetry={jest.fn()}
+        visible
+      />,
+    );
+    expect(screen.getByRole('button', { name: copy.import.closeAction })).toBeTruthy();
+  });
 });

@@ -4,6 +4,13 @@ export type AacProfile = 'aac-lc' | 'he-aac-v1' | 'he-aac-v2' | null;
 
 export type WaveformStatus = 'pending' | 'processing' | 'ready' | 'failed';
 
+export type TrackId = 'track-1' | 'track-2';
+
+export type LegacyFadeDurationMs = 0 | 500 | 1000 | 1500 | 2000 | 3000 | 4000;
+
+export type FadeDurationMs =
+  0 | 500 | 1000 | 1500 | 2000 | 2500 | 3000 | 3500 | 4000 | 4500 | 5000 | 5500 | 6000;
+
 export interface SnapCutSourceV1 {
   id: string;
   displayName: string;
@@ -30,16 +37,30 @@ export interface SnapCutSource extends SnapCutSourceV1 {
   privateAudioSha256: string | null;
 }
 
-export interface SnapCutClip {
+export interface SnapCutClipV1 {
   id: string;
   sourceId: string;
   startMs: number;
   endMs: number;
 }
 
+export interface SnapCutClipV5 extends SnapCutClipV1 {
+  trackId: TrackId;
+  timelineStartMs: number;
+  gain: number;
+  fadeInMs: LegacyFadeDurationMs;
+  fadeOutMs: LegacyFadeDurationMs;
+}
+
+export interface SnapCutClip extends Omit<SnapCutClipV5, 'fadeInMs' | 'fadeOutMs'> {
+  fadeInMs: FadeDurationMs;
+  fadeOutMs: FadeDurationMs;
+}
+
 export type SnapCutExportFormat = 'm4a' | 'flac' | 'mp3';
 
-export type SnapCutExportMode = 'aac-stream-copy' | 'flac-lossless-encode' | 'mp3-lossy-encode';
+export type SnapCutExportMode =
+  'aac-stream-copy' | 'aac-lossy-encode' | 'flac-lossless-encode' | 'mp3-lossy-encode';
 
 export interface SnapCutExportRecord {
   format: SnapCutExportFormat;
@@ -51,7 +72,7 @@ export interface SnapCutExportRecord {
   actualDurationMs: number;
   sampleRateHz: number;
   channelCount: 1 | 2;
-  bitrateKbps: 320 | null;
+  bitrateKbps: 160 | 320 | null;
   bitsPerSample: 24 | null;
   maxBoundaryAdjustmentMs: number;
   fileSizeBytes: number;
@@ -64,7 +85,7 @@ export interface SnapCutProjectV1 {
   createdAt: string;
   updatedAt: string;
   sources: SnapCutSourceV1[];
-  clips: SnapCutClip[];
+  clips: SnapCutClipV1[];
   lastExport: SnapCutExportRecord | null;
 }
 
@@ -75,13 +96,29 @@ export interface SnapCutProjectV2 {
   createdAt: string;
   updatedAt: string;
   sources: SnapCutSource[];
-  clips: SnapCutClip[];
+  clips: SnapCutClipV1[];
   lastExport: SnapCutExportRecord | null;
 }
 
-export interface SnapCutProject extends Omit<SnapCutProjectV2, 'schemaVersion'> {
+export interface SnapCutProjectV3 extends Omit<SnapCutProjectV2, 'schemaVersion'> {
   schemaVersion: 3;
   namePromptCompleted: boolean;
+}
+
+export interface SnapCutProjectV4 extends Omit<SnapCutProjectV3, 'schemaVersion' | 'clips'> {
+  schemaVersion: 4;
+  trackCount: 1 | 2;
+  clips: SnapCutClipV5[];
+}
+
+export interface SnapCutProjectV5 extends Omit<SnapCutProjectV4, 'schemaVersion' | 'trackCount'> {
+  schemaVersion: 5;
+  trackCount: 2;
+}
+
+export interface SnapCutProject extends Omit<SnapCutProjectV5, 'schemaVersion' | 'clips'> {
+  schemaVersion: 6;
+  clips: SnapCutClip[];
 }
 
 export interface SourceFileV1 {
@@ -152,6 +189,7 @@ export interface M4aExportPlan {
 
 export interface ExportFormatAvailability {
   format: SnapCutExportFormat;
+  mode: SnapCutExportMode | null;
   available: boolean;
   reasons: string[];
   estimatedOutputBytes: number | null;
@@ -164,10 +202,12 @@ export interface ExportPreflightResult {
   preferredFormat: 'm4a' | 'flac';
   m4aPlan: M4aExportPlan;
   formats: ExportFormatAvailability[];
+  mayClip: boolean;
 }
 
 export interface ClipTimelineEntry {
   clipId: string;
+  trackId: TrackId;
   compositionStartMs: number;
   compositionEndMs: number;
 }

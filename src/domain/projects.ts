@@ -1,4 +1,4 @@
-import { DEFAULT_SELECTION_DURATION_MS } from './constants';
+import { CURRENT_PROJECT_SCHEMA_VERSION, DEFAULT_SELECTION_DURATION_MS } from './constants';
 import { DomainError } from './errors';
 import { createDefaultProjectName, normalizeProjectName } from './naming';
 import {
@@ -32,13 +32,14 @@ export function createProject(input: CreateProjectInput): SnapCutProject {
   const now = timestamp(date);
   const explicitName = input.name?.trim();
   return snapCutProjectSchema.parse({
-    schemaVersion: 3,
+    schemaVersion: CURRENT_PROJECT_SCHEMA_VERSION,
     id: input.id,
     name: explicitName ? normalizeProjectName(explicitName) : createDefaultProjectName(date),
     namePromptCompleted: Boolean(explicitName),
     createdAt: now,
     updatedAt: now,
     sources: [],
+    trackCount: 2,
     clips: [],
     lastExport: null,
   }) as SnapCutProject;

@@ -42,6 +42,16 @@ internal object ExportMath {
     return capped(payload.add(BigInteger.valueOf(MP3_METADATA_OVERHEAD_BYTES)))
   }
 
+  fun estimateAacBytes(durationMs: Long, channelCount: Int): Long {
+    require(durationMs > 0L && channelCount in 1..2)
+    val bitrateBps = if (channelCount == 1) 160_000L else 320_000L
+    val payload = ceilDivide(
+      BigInteger.valueOf(durationMs).multiply(BigInteger.valueOf(bitrateBps)),
+      BigInteger.valueOf(8_000L)
+    )
+    return capped(payload.add(BigInteger.valueOf(M4A_MINIMUM_OVERHEAD_BYTES)))
+  }
+
   fun requiredFreeBytes(estimatedOutputBytes: Long): Long {
     require(estimatedOutputBytes > 0L)
     val doubledWithSafety = ceilDivide(

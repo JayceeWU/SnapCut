@@ -31,6 +31,11 @@ class M4aPlanRegistryTest {
       )
     }
     assertEquals("M4A_PLAN_STALE", changedPrivateSource.code)
+
+    val changedProcessing = assertThrows(SnapCutMediaException::class.java) {
+      registry.requireIssued(PROJECT_ID, plan, listOf(clip().copy(gain = 0.5)))
+    }
+    assertEquals("M4A_PLAN_STALE", changedProcessing.code)
   }
 
   @Test

@@ -1,5 +1,9 @@
 export * from './AppButton';
 export * from './ClipCard';
+export * from './ClipActionRail';
+export * from './ClipInlineAdjustment';
+export * from './editorPlayback';
+export * from './editorWorkspaceLayout';
 export * from './ConfirmDeleteModal';
 export * from './CorruptProjectCard';
 export * from './EmptyState';
@@ -13,3 +17,7 @@ export * from './WaveformEditor';
 export * from './WaveformJobPanel';
 export * from './ExportModal';
 export * from './ImportProgressModal';
+export * from './MediaLibraryModal';
+export * from './LiveClipActionRail';
+export * from './ProjectTimeline';
+export * from './TimelineOverview';

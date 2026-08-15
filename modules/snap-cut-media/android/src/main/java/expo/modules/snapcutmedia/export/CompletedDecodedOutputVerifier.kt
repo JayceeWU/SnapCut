@@ -1,6 +1,7 @@
 package expo.modules.snapcutmedia.export
 
 import android.media.MediaCodecList
+import android.media.MediaCodecInfo
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import expo.modules.snapcutmedia.errors.SnapCutMediaError
@@ -36,7 +37,7 @@ internal class CompletedDecodedOutputVerifier {
     val verificationError = when (format) {
       ExportFormat.FLAC -> SnapCutMediaError.FLAC_VERIFICATION_FAILED
       ExportFormat.MP3 -> SnapCutMediaError.MP3_VERIFICATION_FAILED
-      ExportFormat.M4A -> throw mediaError(SnapCutMediaError.EXPORT_FORMAT_UNAVAILABLE)
+      ExportFormat.M4A -> SnapCutMediaError.AAC_VERIFICATION_FAILED
     }
     fun fail(stage: String): Nothing = throw mediaError(verificationError, stage)
     try {
@@ -61,12 +62,13 @@ internal class CompletedDecodedOutputVerifier {
           ExportFormat.FLAC ->
             mime == "audio/flac" || mime == "audio/x-flac" || flacExtractorPcm
           ExportFormat.MP3 -> mime == "audio/mpeg"
-          ExportFormat.M4A -> false
+          ExportFormat.M4A -> mime == MediaFormat.MIMETYPE_AUDIO_AAC
         }
         val sampleRate = trackFormat.integerOrNull(MediaFormat.KEY_SAMPLE_RATE)
         val channels = trackFormat.integerOrNull(MediaFormat.KEY_CHANNEL_COUNT)
         val durationUs = trackFormat.longOrNull(MediaFormat.KEY_DURATION)
         if (!acceptedMime) fail("mime:$mime")
+        if (format == ExportFormat.M4A && !isAacLc(trackFormat)) fail("aac-profile")
         if (sampleRate != expectedSampleRateHz) fail("sample-rate")
         if (channels != expectedChannelCount) fail("channel-count")
         if (durationUs == null || durationUs <= 0L) fail("duration-missing")
@@ -81,7 +83,9 @@ internal class CompletedDecodedOutputVerifier {
           // LAME adds encoder delay and pads to complete MPEG audio frames.
           ExportFormat.MP3 -> MP3_FIXED_TOLERANCE_US +
             framesToDurationUs(MP3_DELAY_PADDING_FRAMES, expectedSampleRateHz)
-          ExportFormat.M4A -> 0L
+          // AAC-LC encoders commonly add codec delay and pad to complete access units.
+          ExportFormat.M4A -> AAC_FIXED_TOLERANCE_US +
+            framesToDurationUs(AAC_DELAY_PADDING_FRAMES, expectedSampleRateHz)
         }
         if (abs(durationUs - expectedDurationUs) > toleranceUs) {
           fail("duration-mismatch")
@@ -137,10 +141,26 @@ internal class CompletedDecodedOutputVerifier {
       input.read(signature) == signature.size && signature.contentEquals(FLAC_SIGNATURE)
     }
 
+  private fun isAacLc(format: MediaFormat): Boolean {
+    val declared = format.integerOrNull(MediaFormat.KEY_AAC_PROFILE)
+      ?: format.integerOrNull(MediaFormat.KEY_PROFILE)
+    if (declared != null) return declared == MediaCodecInfo.CodecProfileLevel.AACObjectLC
+    val config = format.byteBufferOrNull("csd-0") ?: return false
+    if (!config.hasRemaining()) return false
+    val first = config.get(config.position()).toInt() and 0xff
+    val audioObjectType = first ushr 3
+    return audioObjectType == MediaCodecInfo.CodecProfileLevel.AACObjectLC
+  }
+
   private companion object {
     const val FLAC_DURATION_TOLERANCE_US = 2_000L
     const val MP3_FIXED_TOLERANCE_US = 50_000L
     const val MP3_DELAY_PADDING_FRAMES = 2_304L
+    const val AAC_FIXED_TOLERANCE_US = 50_000L
+    const val AAC_DELAY_PADDING_FRAMES = 2_048L
     val FLAC_SIGNATURE = byteArrayOf(0x66, 0x4c, 0x61, 0x43)
   }
 }
+
+private fun MediaFormat.byteBufferOrNull(key: String) =
+  if (containsKey(key)) runCatching { getByteBuffer(key)?.duplicate() }.getOrNull() else null

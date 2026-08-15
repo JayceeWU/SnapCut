@@ -1,7 +1,7 @@
 import { AppState, type AppStateStatus } from 'react-native';
 import { randomUUID } from 'expo-crypto';
 
-import { validateClipRange } from '@/domain';
+import { compositionDurationMs, validateClipRange } from '@/domain';
 import type { SnapCutClip, SnapCutProject, SnapCutSource } from '@/domain';
 import { diagnosticLog } from '@/diagnostics';
 import SnapCutMedia from '@/native/SnapCutMedia';
@@ -108,21 +108,43 @@ interface ActivePreview {
   mode: PreviewMode;
   key: string;
   clipIds: string[];
+  controlRevision: number;
+  durationMs: number;
+  nativeRegistered: boolean;
+  loadResolved: boolean;
+  pendingPlayRevision: number | null;
+  pendingSeek: {
+    positionMs: number;
+    resumeAfterSeek: boolean;
+    controlRevision: number;
+  } | null;
   lastSequence: number;
 }
 
 const commandRequest = (active: ActivePreview) => ({
   playbackSessionId: active.playbackSessionId,
   generation: active.generation,
+  controlRevision: active.controlRevision,
 });
 
+const clipKey = (clip: SnapCutClip): string =>
+  [
+    clip.id,
+    clip.sourceId,
+    clip.startMs,
+    clip.endMs,
+    clip.trackId,
+    clip.timelineStartMs,
+    clip.gain,
+    clip.fadeInMs,
+    clip.fadeOutMs,
+  ].join(':');
+
 const selectionKey = (projectId: string, clip: SnapCutClip): string =>
-  `selection:${projectId}:${clip.sourceId}:${clip.startMs}:${clip.endMs}`;
+  `selection:${projectId}:${clipKey(clip)}`;
 
 const compositionKey = (project: SnapCutProject): string =>
-  `composition:${project.id}:${project.clips
-    .map(({ id, sourceId, startMs, endMs }) => `${id}:${sourceId}:${startMs}:${endMs}`)
-    .join('|')}`;
+  `composition:${project.id}:${project.clips.map(clipKey).sort().join('|')}`;
 
 const clampInteger = (value: number, minimum: number, maximum: number): number =>
   Math.min(Math.max(Math.round(Number.isFinite(value) ? value : 0), minimum), maximum);
@@ -196,7 +218,11 @@ export class PreviewCoordinator {
 
   async loadSelection(project: SnapCutProject, clipInput: SnapCutClip): Promise<boolean> {
     const clip = validateClipRange(clipInput, project.sources);
-    return this.load('selection', project, [clip], selectionKey(project.id, clip));
+    return this.load('selection', project, [clip], selectionKey(project.id, clip), {
+      operationToken: ++this.operationToken,
+      desiredPlaying: false,
+      initialControlRevision: 0,
+    });
   }
 
   async loadComposition(project: SnapCutProject): Promise<boolean> {
@@ -204,31 +230,122 @@ export class PreviewCoordinator {
       throw new PreviewCoordinatorError('EMPTY_COMPOSITION', 'Composition preview needs a clip.');
     }
     const clips = project.clips.map((clip) => validateClipRange(clip, project.sources));
-    return this.load('composition', project, clips, compositionKey(project));
+    return this.load('composition', project, clips, compositionKey(project), {
+      operationToken: ++this.operationToken,
+      desiredPlaying: false,
+      initialControlRevision: 0,
+    });
   }
 
   async toggleSelection(project: SnapCutProject, clip: SnapCutClip): Promise<void> {
     const key = selectionKey(project.id, clip);
     if (this.active?.key === key) {
       const state = usePlaybackStore.getState();
-      if (state.playing) await this.pause();
-      else if (state.loaded) await this.play();
-      else if (!state.loading && (await this.loadSelection(project, clip))) await this.play();
+      if (state.desiredPlaying || state.playing) await this.pause();
+      else await this.playSelection(project, clip);
       return;
     }
-    if (await this.loadSelection(project, clip)) await this.play();
+    await this.playSelection(project, clip);
   }
 
-  async toggleComposition(project: SnapCutProject): Promise<void> {
+  async toggleSource(project: SnapCutProject, source: SnapCutSource): Promise<void> {
+    await this.toggleSelection(project, {
+      id: source.id,
+      sourceId: source.id,
+      startMs: 0,
+      endMs: source.durationMs,
+      trackId: 'track-1',
+      timelineStartMs: 0,
+      gain: 1,
+      fadeInMs: 0,
+      fadeOutMs: 0,
+    });
+  }
+
+  async toggleComposition(project: SnapCutProject, startPositionMs?: number): Promise<void> {
     const key = compositionKey(project);
     if (this.active?.key === key) {
       const state = usePlaybackStore.getState();
-      if (state.playing) await this.pause();
-      else if (state.loaded) await this.play();
-      else if (!state.loading && (await this.loadComposition(project))) await this.play();
+      if (state.desiredPlaying || state.playing) await this.pauseComposition();
+      else await this.playComposition(project, startPositionMs);
       return;
     }
-    if (await this.loadComposition(project)) await this.play();
+    await this.playComposition(project, startPositionMs);
+  }
+
+  async playSelection(project: SnapCutProject, clipInput: SnapCutClip): Promise<void> {
+    const clip = validateClipRange(clipInput, project.sources);
+    const key = selectionKey(project.id, clip);
+    const operationToken = ++this.operationToken;
+    let active = this.active?.key === key ? this.active : null;
+    if (active === null) {
+      const loaded = await this.load('selection', project, [clip], key, {
+        operationToken,
+        desiredPlaying: true,
+        initialControlRevision: 1,
+      });
+      if (!loaded) return;
+      active = this.active;
+    } else {
+      active.controlRevision += 1;
+      usePlaybackStore.getState().requestPlay(active.controlRevision);
+    }
+    if (!active || !this.isCurrentPlayIntent(active, operationToken)) return;
+    if (!active.loadResolved) {
+      active.pendingPlayRevision = active.controlRevision;
+      return;
+    }
+    await this.issuePlay(active, operationToken);
+  }
+
+  async playComposition(project: SnapCutProject, startPositionMs?: number): Promise<void> {
+    if (project.clips.length === 0) {
+      throw new PreviewCoordinatorError('EMPTY_COMPOSITION', 'Composition preview needs a clip.');
+    }
+    const clips = project.clips.map((clip) => validateClipRange(clip, project.sources));
+    const key = compositionKey(project);
+    const durationMs = compositionDurationMs(clips);
+    const requestedStart =
+      startPositionMs === undefined
+        ? undefined
+        : clampInteger(startPositionMs, 0, Math.max(0, durationMs));
+    const operationToken = ++this.operationToken;
+    let active = this.active?.key === key ? this.active : null;
+    if (active === null) {
+      const loaded = await this.load('composition', project, clips, key, {
+        operationToken,
+        desiredPlaying: true,
+        initialControlRevision: 1,
+      });
+      if (!loaded) return;
+      active = this.active;
+    } else {
+      active.controlRevision += 1;
+      usePlaybackStore.getState().requestPlay(active.controlRevision);
+    }
+    if (!active || !this.isCurrentPlayIntent(active, operationToken)) return;
+    if (!active.loadResolved) {
+      if (requestedStart !== undefined) {
+        active.pendingSeek = {
+          positionMs: requestedStart,
+          resumeAfterSeek: false,
+          controlRevision: active.controlRevision,
+        };
+      }
+      active.pendingPlayRevision = active.controlRevision;
+      return;
+    }
+    if (requestedStart !== undefined && requestedStart !== usePlaybackStore.getState().positionMs) {
+      await this.issueSeek(active, requestedStart, false, operationToken);
+    }
+    if (this.isCurrentPlayIntent(active, operationToken)) {
+      await this.issuePlay(active, operationToken);
+    }
+  }
+
+  async pauseComposition(): Promise<void> {
+    if (this.active?.mode !== 'composition') return;
+    await this.pause();
   }
 
   async play(): Promise<void> {
@@ -237,31 +354,82 @@ export class PreviewCoordinator {
       return;
     }
     const active = this.requireActive();
+    const operationToken = ++this.operationToken;
+    active.controlRevision += 1;
+    usePlaybackStore.getState().requestPlay(active.controlRevision);
+    if (!active.loadResolved) {
+      active.pendingPlayRevision = active.controlRevision;
+      return;
+    }
+    await this.issuePlay(active, operationToken);
+  }
+
+  private async issuePlay(active: ActivePreview, operationToken: number): Promise<void> {
+    if (!this.isCurrentPlayIntent(active, operationToken)) return;
     try {
       await this.media.playPreview(commandRequest(active));
     } catch (error) {
-      this.failActive(active, error);
+      if (this.isCurrentIntent(active, operationToken)) this.failActive(active, error);
     }
   }
 
   async pause(): Promise<void> {
     const active = this.active;
-    if (!active) return;
+    if (!active) {
+      usePlaybackStore.getState().markBackgroundPaused();
+      return;
+    }
+    const operationToken = ++this.operationToken;
+    active.controlRevision += 1;
+    active.pendingPlayRevision = null;
+    active.pendingSeek = null;
+    usePlaybackStore.getState().requestPause(active.controlRevision);
+    if (!active.nativeRegistered) {
+      this.active = null;
+      usePlaybackStore.getState().cancelSession(active.controlRevision);
+      return;
+    }
     try {
       await this.media.pausePreview(commandRequest(active));
     } catch (error) {
-      this.failActive(active, error);
+      if (!this.isCurrentIntent(active, operationToken)) return;
+      await this.failAndReleaseAfterPause(active, error);
     }
   }
 
-  async seek(positionMs: number): Promise<void> {
+  async seek(positionMs: number, resumeAfterSeek = false): Promise<void> {
     const active = this.requireActive();
-    const durationMs = usePlaybackStore.getState().durationMs;
-    const safePositionMs = clampInteger(positionMs, 0, Math.max(0, durationMs));
+    const operationToken = ++this.operationToken;
+    active.controlRevision += 1;
+    const safePositionMs = clampInteger(positionMs, 0, Math.max(0, active.durationMs));
+    if (resumeAfterSeek) usePlaybackStore.getState().requestPlay(active.controlRevision);
+    else usePlaybackStore.getState().requestPause(active.controlRevision);
+    if (!active.loadResolved) {
+      active.pendingSeek = {
+        positionMs: safePositionMs,
+        resumeAfterSeek,
+        controlRevision: active.controlRevision,
+      };
+      active.pendingPlayRevision = null;
+      return;
+    }
+    await this.issueSeek(active, safePositionMs, resumeAfterSeek, operationToken);
+  }
+
+  private async issueSeek(
+    active: ActivePreview,
+    positionMs: number,
+    resumeAfterSeek: boolean,
+    operationToken: number,
+  ): Promise<void> {
     try {
-      await this.media.seekPreview({ ...commandRequest(active), positionMs: safePositionMs });
+      await this.media.seekPreview({
+        ...commandRequest(active),
+        positionMs,
+        resumeAfterSeek,
+      });
     } catch (error) {
-      this.failActive(active, error);
+      if (this.isCurrentIntent(active, operationToken)) this.failActive(active, error);
     }
   }
 
@@ -272,6 +440,15 @@ export class PreviewCoordinator {
       return;
     }
     const operationToken = ++this.operationToken;
+    active.controlRevision += 1;
+    active.pendingPlayRevision = null;
+    active.pendingSeek = null;
+    usePlaybackStore.getState().requestPause(active.controlRevision);
+    if (!active.nativeRegistered) {
+      this.active = null;
+      usePlaybackStore.getState().cancelSession(active.controlRevision);
+      return;
+    }
     try {
       await this.media.releasePreview(commandRequest(active));
     } catch (error) {
@@ -297,6 +474,11 @@ export class PreviewCoordinator {
     project: SnapCutProject,
     clips: SnapCutClip[],
     key: string,
+    intent: {
+      operationToken: number;
+      desiredPlaying: boolean;
+      initialControlRevision: number;
+    },
   ): Promise<boolean> {
     if (!this.started) this.start();
     if (!usePlaybackStore.getState().available) {
@@ -304,48 +486,160 @@ export class PreviewCoordinator {
       throw new PreviewCoordinatorError('PREVIEW_UNAVAILABLE', 'Native preview is unavailable.');
     }
 
+    const orderedClips =
+      mode === 'selection'
+        ? clips
+        : [...clips].sort(
+            (left, right) =>
+              left.timelineStartMs - right.timelineStartMs ||
+              left.trackId.localeCompare(right.trackId) ||
+              left.id.localeCompare(right.id),
+          );
     let nativeClips: NativePreviewClip[];
     try {
-      nativeClips = clips.map((clip) => this.nativeClip(project, clip));
+      nativeClips = orderedClips.map((clip) => this.nativeClip(project, clip));
     } catch (error) {
       usePlaybackStore.getState().fail();
       throw error;
     }
 
-    const operationToken = ++this.operationToken;
     const previous = this.active;
-    if (previous) {
-      try {
-        await this.media.pausePreview(commandRequest(previous));
-      } catch {
-        // A stale/finished previous session may already have released itself.
-      }
-      if (operationToken !== this.operationToken) return false;
-    }
-
+    const durationMs = Math.max(
+      0,
+      ...orderedClips.map((clip) =>
+        mode === 'selection'
+          ? clip.endMs - clip.startMs
+          : clip.timelineStartMs + clip.endMs - clip.startMs,
+      ),
+    );
     const active: ActivePreview = {
       projectId: project.id,
       playbackSessionId: this.idFactory(),
       generation: ++this.generation,
       mode,
       key,
-      clipIds: clips.map(({ id }) => id),
+      clipIds: orderedClips.map(({ id }) => id),
+      controlRevision: intent.initialControlRevision,
+      durationMs,
+      nativeRegistered: false,
+      loadResolved: false,
+      pendingPlayRevision: null,
+      pendingSeek: null,
       lastSequence: 0,
     };
     this.active = active;
-    usePlaybackStore.getState().beginSession(active);
+    usePlaybackStore.getState().beginSession({
+      projectId: active.projectId,
+      playbackSessionId: active.playbackSessionId,
+      generation: active.generation,
+      controlRevision: active.controlRevision,
+      mode: active.mode,
+      desiredPlaying: intent.desiredPlaying,
+    });
+
+    if (previous) {
+      previous.controlRevision += 1;
+      previous.pendingPlayRevision = null;
+      previous.pendingSeek = null;
+      if (previous.nativeRegistered) {
+        try {
+          await this.media.pausePreview(commandRequest(previous));
+        } catch {
+          // A stale/finished previous session may already have released itself.
+        }
+      }
+      if (!this.isCurrentIntent(active, intent.operationToken)) {
+        await this.releaseTransitionSource(previous);
+        return false;
+      }
+    }
 
     try {
+      active.nativeRegistered = true;
       const request = { ...commandRequest(active), clips: nativeClips };
       if (mode === 'selection') await this.media.loadSelectionPreview(request);
       else await this.media.loadCompositionPreview(request);
-      return operationToken === this.operationToken && this.isActive(active);
+      if (!this.isActive(active)) return false;
+      active.loadResolved = true;
+      await this.flushPendingCommands(active);
+      return intent.operationToken === this.operationToken && this.isActive(active);
     } catch (error) {
-      if (operationToken === this.operationToken && this.isActive(active)) {
-        this.failActive(active, error);
-      }
+      await this.invalidateRejectedSession(active, error);
       return false;
     }
+  }
+
+  private async flushPendingCommands(active: ActivePreview): Promise<void> {
+    const pendingSeek = active.pendingSeek;
+    active.pendingSeek = null;
+    if (
+      pendingSeek &&
+      pendingSeek.controlRevision === active.controlRevision &&
+      this.isActive(active)
+    ) {
+      await this.media.seekPreview({
+        ...commandRequest(active),
+        positionMs: pendingSeek.positionMs,
+        resumeAfterSeek: pendingSeek.resumeAfterSeek,
+      });
+    }
+
+    const pendingPlayRevision = active.pendingPlayRevision;
+    active.pendingPlayRevision = null;
+    if (
+      pendingPlayRevision === active.controlRevision &&
+      this.isActive(active) &&
+      usePlaybackStore.getState().desiredPlaying
+    ) {
+      await this.media.playPreview(commandRequest(active));
+    }
+  }
+
+  private async releaseTransitionSource(previous: ActivePreview): Promise<void> {
+    if (!previous.nativeRegistered) return;
+    await this.media.releasePreview(commandRequest(previous)).catch(() => undefined);
+  }
+
+  private async invalidateRejectedSession(active: ActivePreview, cause: unknown): Promise<void> {
+    if (!this.isActive(active)) return;
+    const state = usePlaybackStore.getState();
+    const latestIntentStillWantsPlay =
+      state.playbackSessionId === active.playbackSessionId &&
+      state.generation === active.generation &&
+      state.controlRevision === active.controlRevision &&
+      state.desiredPlaying;
+
+    this.active = null;
+    if (latestIntentStillWantsPlay) {
+      this.onDiagnostic({
+        operation: 'preview',
+        projectId: active.projectId,
+        jobId: active.playbackSessionId,
+        generation: active.generation,
+        stage: active.mode,
+        code: errorCode(cause, 'PREVIEW_COMMAND_FAILED'),
+      });
+      usePlaybackStore.getState().fail();
+    } else {
+      usePlaybackStore.getState().cancelSession(active.controlRevision);
+    }
+    if (active.nativeRegistered) {
+      await this.media.releasePreview(commandRequest(active)).catch(() => undefined);
+    }
+  }
+
+  private async failAndReleaseAfterPause(active: ActivePreview, cause: unknown): Promise<void> {
+    this.onDiagnostic({
+      operation: 'preview',
+      projectId: active.projectId,
+      jobId: active.playbackSessionId,
+      generation: active.generation,
+      stage: 'pause',
+      code: errorCode(cause, 'PREVIEW_COMMAND_FAILED'),
+    });
+    usePlaybackStore.getState().fail();
+    await this.media.releasePreview(commandRequest(active)).catch(() => undefined);
+    if (this.isActive(active)) this.active = null;
   }
 
   private nativeClip(project: SnapCutProject, clip: SnapCutClip): NativePreviewClip {
@@ -362,6 +656,11 @@ export class PreviewCoordinator {
       audioFileUri: this.sourceResolver.resolveSourceAudioUri(project, source),
       startMs: clip.startMs,
       endMs: clip.endMs,
+      trackId: clip.trackId,
+      timelineStartMs: clip.timelineStartMs,
+      gain: clip.gain,
+      fadeInMs: clip.fadeInMs,
+      fadeOutMs: clip.fadeOutMs,
     };
   }
 
@@ -373,11 +672,17 @@ export class PreviewCoordinator {
       event.jobId !== active.playbackSessionId ||
       event.playbackSessionId !== active.playbackSessionId ||
       event.generation !== active.generation ||
+      event.controlRevision < active.controlRevision ||
       event.mode !== active.mode ||
       event.sequence <= active.lastSequence ||
       !this.validClipPosition(active, event)
     ) {
       return;
+    }
+    if (event.controlRevision > active.controlRevision) {
+      active.controlRevision = event.controlRevision;
+      active.pendingPlayRevision = null;
+      active.pendingSeek = null;
     }
     active.lastSequence = event.sequence;
     usePlaybackStore.getState().applyStatus(event, this.appIsActive);
@@ -422,6 +727,19 @@ export class PreviewCoordinator {
     return (
       this.active?.playbackSessionId === active.playbackSessionId &&
       this.active.generation === active.generation
+    );
+  }
+
+  private isCurrentIntent(active: ActivePreview, operationToken: number): boolean {
+    return this.isActive(active) && operationToken === this.operationToken;
+  }
+
+  private isCurrentPlayIntent(active: ActivePreview, operationToken: number): boolean {
+    const state = usePlaybackStore.getState();
+    return (
+      this.isCurrentIntent(active, operationToken) &&
+      state.desiredPlaying &&
+      state.controlRevision === active.controlRevision
     );
   }
 

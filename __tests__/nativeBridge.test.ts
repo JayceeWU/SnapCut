@@ -279,6 +279,7 @@ describe('SnapCutMedia TypeScript boundary', () => {
       sequence: 1,
       stage: 'playing',
       generation: 2,
+      controlRevision: 4,
       playbackSessionId: 'session-1',
       mode: 'selection',
       loaded: true,
@@ -292,6 +293,77 @@ describe('SnapCutMedia TypeScript boundary', () => {
     expect(() => nativeListener?.(event)).toThrow(SnapCutMediaContractError);
     nativeListener?.({ ...event, didJustFinish: false });
     expect(listener).toHaveBeenCalledWith({ ...event, didJustFinish: false });
+  });
+
+  test('requires control revisions and an explicit seek resume policy', async () => {
+    const seekPreview = jest.fn(async () => undefined);
+    const client = createSnapCutMediaClient(() => nativeModule({ seekPreview }));
+    const request = {
+      playbackSessionId: 'session-1',
+      generation: 2,
+      controlRevision: 7,
+      positionMs: 500,
+      resumeAfterSeek: false,
+    };
+
+    await expect(client.seekPreview(request)).resolves.toBeUndefined();
+    expect(seekPreview).toHaveBeenCalledWith(request);
+    await expect(
+      client.seekPreview({
+        playbackSessionId: 'session-1',
+        generation: 2,
+        controlRevision: 8,
+        positionMs: 600,
+      } as never),
+    ).rejects.toThrow(SnapCutMediaContractError);
+  });
+
+  test('accepts the explicit AAC re-encode request and 160 kbps mono result', async () => {
+    const exportAudio = jest.fn(async () => ({
+      format: 'm4a' as const,
+      mode: 'aac-lossy-encode' as const,
+      contentUri: 'content://media/audio/1',
+      displayName: 'mix.m4a',
+      requestedDurationMs: 2_000,
+      actualDurationMs: 2_010,
+      sampleRateHz: 48_000,
+      channelCount: 1 as const,
+      bitrateKbps: 160 as const,
+      bitsPerSample: null,
+      maxBoundaryAdjustmentMs: 0,
+      fileSizeBytes: 50_000,
+    }));
+    const client = createSnapCutMediaClient(() => nativeModule({ exportAudio }));
+    const request = {
+      jobId: 'export-1',
+      generation: 1,
+      projectId: 'project-1',
+      format: 'm4a' as const,
+      displayNameWithoutExtension: 'mix',
+      clips: [
+        {
+          clipId: 'clip-1',
+          sourceId: 'source-1',
+          audioFileUri: 'file:///data/user/0/com.snapcut.app/files/SnapCut/projects/p/source.m4a',
+          startMs: 0,
+          endMs: 2_000,
+          trackId: 'track-1' as const,
+          timelineStartMs: 0,
+          gain: 0.8,
+          fadeInMs: 500 as const,
+          fadeOutMs: 500 as const,
+        },
+      ],
+      outputSampleRateHz: 48_000 as const,
+      outputChannelCount: 1 as const,
+      m4aPlan: null,
+    };
+
+    await expect(client.exportAudio(request)).resolves.toMatchObject({
+      mode: 'aac-lossy-encode',
+      bitrateKbps: 160,
+    });
+    expect(exportAudio).toHaveBeenCalledWith(request);
   });
 
   test('drops stale job or generation events through the shared predicate', () => {

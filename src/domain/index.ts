@@ -6,5 +6,6 @@ export * from './migrations';
 export * from './naming';
 export * from './projects';
 export * from './schemas';
+export * from './sourceRelations';
 export * from './timeline';
 export * from './types';

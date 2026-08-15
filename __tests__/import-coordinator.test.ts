@@ -1,3 +1,4 @@
+import { addFullSourceClip } from '@/domain/clips';
 import { addSource } from '@/domain/projects';
 import type { SnapCutProject } from '@/domain/types';
 import type { NativeErrorEvent, ProgressEvent } from '@/native/SnapCutMedia.events';
@@ -22,6 +23,11 @@ const SOURCE_IDS = [
   '33333333-3333-4333-8333-333333333333',
   '44444444-4444-4444-8444-444444444444',
 ];
+const CLIP_IDS = [
+  '77777777-7777-4777-8777-777777777777',
+  '88888888-8888-4888-8888-888888888888',
+  '99999999-9999-4999-8999-999999999999',
+];
 const NOW = '2026-08-12T23:00:00.000Z';
 const PROVIDER_URI = 'content://provider/document/audio?secret=opaque';
 
@@ -44,13 +50,14 @@ const inspection: SourceInspection = {
 
 function emptyProject(): SnapCutProject {
   return {
-    schemaVersion: 3,
+    schemaVersion: 6,
     namePromptCompleted: true,
     id: PROJECT_ID,
     name: 'Project',
     createdAt: NOW,
     updatedAt: NOW,
     sources: [],
+    trackCount: 2,
     clips: [],
     lastExport: null,
   };
@@ -167,7 +174,13 @@ class FakeRepository implements ImportRepositoryPort {
 
   async finalizeImport(input: FinalizeImportInput): Promise<SnapCutProject> {
     this.finalized.push(input);
-    this.project = addSource(this.project, input.source, NOW);
+    this.project = addFullSourceClip(
+      addSource(this.project, input.source, NOW),
+      input.source.id,
+      input.clipId,
+      input.targetTrackId,
+      NOW,
+    );
     return this.project;
   }
 
@@ -217,6 +230,7 @@ function setup(onDiagnostic?: (diagnostic: ImportDiagnostic) => void) {
   const repository = new FakeRepository();
   const states = new StateRecorder();
   const sourceIds = [...SOURCE_IDS];
+  const clipIds = [...CLIP_IDS];
   let job = 0;
   const scheduled: { projectId: string; sourceId: string }[] = [];
   const coordinator = new ImportCoordinator(media, repository, {
@@ -225,6 +239,7 @@ function setup(onDiagnostic?: (diagnostic: ImportDiagnostic) => void) {
     now: () => NOW,
     jobIdFactory: () => `job-${++job}`,
     sourceIdFactory: () => sourceIds.shift() ?? SOURCE_IDS[0]!,
+    clipIdFactory: () => clipIds.shift() ?? CLIP_IDS[0]!,
     waveformScheduler: {
       schedule: (request) => {
         scheduled.push(request);
@@ -251,12 +266,36 @@ describe('ImportCoordinator', () => {
       'Source 1',
       'Source 2',
     ]);
+    expect(repository.project.clips).toEqual([
+      expect.objectContaining({ id: CLIP_IDS[0], timelineStartMs: 0, trackId: 'track-1' }),
+      expect.objectContaining({ id: CLIP_IDS[1], timelineStartMs: 1_000, trackId: 'track-1' }),
+    ]);
     expect(JSON.stringify(repository.finalized)).not.toContain('content://');
     expect(JSON.stringify(repository.project)).not.toContain('content://');
     expect(JSON.stringify(repository.project)).not.toContain('Private song.m4a');
     expect(JSON.stringify(states.snapshots)).not.toContain('content://');
     expect(media.inspectRequests[0]?.sourceUri).toBe(PROVIDER_URI);
     expect(media.importRequests[0]?.sourceUri).toBe(PROVIDER_URI);
+  });
+
+  it('atomically places a later full source on the selected second track', async () => {
+    const { media, repository, coordinator } = setup();
+    repository.project = { ...repository.project, trackCount: 2 };
+    media.pickResults.push(picked());
+
+    const outcome = await coordinator.importIntoProject(PROJECT_ID, 'track-2');
+
+    expect(outcome.status).toBe('imported');
+    expect(repository.finalized[0]).toMatchObject({
+      clipId: CLIP_IDS[0],
+      targetTrackId: 'track-2',
+    });
+    expect(repository.project.clips[0]).toMatchObject({
+      trackId: 'track-2',
+      timelineStartMs: 0,
+      startMs: 0,
+      endMs: 1_000,
+    });
   });
 
   it('commits FLAC input with a private source flac name', async () => {

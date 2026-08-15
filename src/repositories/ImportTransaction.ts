@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { SnapCutSource } from '@/domain/types';
+import type { SnapCutSource, TrackId } from '@/domain/types';
 
 export const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
@@ -54,6 +54,8 @@ export interface ImportTransactionPaths {
 export interface FinalizeImportInput {
   readonly jobId: string;
   readonly projectId: string;
+  readonly clipId: string;
+  readonly targetTrackId: TrackId;
   readonly source: SnapCutSource;
   /** SHA-256 returned by native inspection for the completed private media. */
   readonly privateAudioSha256: string;

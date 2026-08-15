@@ -7,6 +7,7 @@ import expo.modules.snapcutmedia.models.M4aSourceSnapshot
 
 internal data class ExportFormatAvailabilityData(
   val format: ExportFormat,
+  val mode: String?,
   val available: Boolean,
   val reasons: List<String>,
   val estimatedOutputBytes: Long?,
@@ -16,6 +17,7 @@ internal data class ExportFormatAvailabilityData(
 ) {
   fun toBridgeMap(): Map<String, Any?> = mapOf(
     "format" to format.value,
+    "mode" to mode,
     "available" to available,
     "reasons" to reasons,
     "estimatedOutputBytes" to estimatedOutputBytes,
@@ -28,12 +30,14 @@ internal data class ExportFormatAvailabilityData(
 internal data class ExportPreflightData(
   val preferredFormat: ExportFormat,
   val m4aPlan: M4aExportPlan,
-  val formats: List<ExportFormatAvailabilityData>
+  val formats: List<ExportFormatAvailabilityData>,
+  val mayClip: Boolean
 ) {
   fun toBridgeMap(): Map<String, Any?> = mapOf(
     "preferredFormat" to preferredFormat.value,
     "m4aPlan" to m4aPlan.toBridgeMap(),
-    "formats" to formats.map { it.toBridgeMap() }
+    "formats" to formats.map { it.toBridgeMap() },
+    "mayClip" to mayClip
   )
 }
 
@@ -68,6 +72,7 @@ internal data class ExportAudioResultData(
 }
 
 internal data class ExportCodecCapabilities(
+  val aacAvailable: Boolean,
   val flacAvailable: Boolean,
   val mp3Available: Boolean,
   val resamplerAvailable: Boolean

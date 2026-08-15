@@ -4,6 +4,7 @@ import { randomUUID } from 'expo-crypto';
 import { copy } from '@/constants';
 import { diagnosticLog } from '@/diagnostics';
 import {
+  compositionDurationMs,
   createDefaultExportBaseName,
   validateExportBaseName,
   type SnapCutExportFormat,
@@ -138,11 +139,13 @@ export class ExportCoordinator {
 
     const active = this.createJob(project.id, 'preflight', null);
     const token = ++this.operationToken;
-    useExportStore.getState().beginPreflight(
-      active,
-      createDefaultExportBaseName(project.name, this.now()),
-      project.clips.reduce((total, clip) => total + clip.endMs - clip.startMs, 0),
-    );
+    useExportStore
+      .getState()
+      .beginPreflight(
+        active,
+        createDefaultExportBaseName(project.name, this.now()),
+        compositionDurationMs(project.clips),
+      );
 
     try {
       const preflight = await this.queue.enqueue(
@@ -181,6 +184,7 @@ export class ExportCoordinator {
     }
     const outputSampleRateHz = format.sampleRateHz;
     const outputChannelCount = format.channelCount;
+    const usesM4aStreamCopy = selectedFormat === 'm4a' && format.mode === 'aac-stream-copy';
     const displayNameWithoutExtension = validateExportBaseName(state.displayNameWithoutExtension);
     await this.preview.releaseProject(project.id);
 
@@ -198,10 +202,9 @@ export class ExportCoordinator {
             format: selectedFormat,
             displayNameWithoutExtension,
             clips: this.nativeClips(project),
-            outputSampleRateHz:
-              selectedFormat === 'm4a' ? null : this.decodedRate(outputSampleRateHz),
-            outputChannelCount: selectedFormat === 'm4a' ? null : outputChannelCount,
-            m4aPlan: selectedFormat === 'm4a' ? preflight.m4aPlan : null,
+            outputSampleRateHz: usesM4aStreamCopy ? null : this.decodedRate(outputSampleRateHz),
+            outputChannelCount: usesM4aStreamCopy ? null : outputChannelCount,
+            m4aPlan: usesM4aStreamCopy ? preflight.m4aPlan : null,
           });
         },
       );
@@ -274,6 +277,11 @@ export class ExportCoordinator {
         audioFileUri: this.sourceResolver.resolveSourceAudioUri(project, source),
         startMs: clip.startMs,
         endMs: clip.endMs,
+        trackId: clip.trackId,
+        timelineStartMs: clip.timelineStartMs,
+        gain: clip.gain,
+        fadeInMs: clip.fadeInMs,
+        fadeOutMs: clip.fadeOutMs,
       };
     });
   }

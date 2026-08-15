@@ -7,7 +7,8 @@ import {
 } from '@/stores';
 
 const createFixture = (id: string, name: string, updatedAt: string): SnapCutProject => ({
-  schemaVersion: 3,
+  schemaVersion: 6,
+  trackCount: 2,
   namePromptCompleted: true,
   id,
   name,

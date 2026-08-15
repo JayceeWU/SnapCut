@@ -14,6 +14,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Android devices may use 16 KiB memory pages. Keep every SnapCut-owned shared
+# library's ELF LOAD segments compatible even when the pinned NDK does not make
+# flexible page sizes the default.
+set(SNAPCUT_ANDROID_MAX_PAGE_SIZE "16384")
+function(snapcut_enable_16k_page_alignment target_name)
+  if(NOT TARGET "${target_name}")
+    message(FATAL_ERROR "Unknown SnapCut shared-library target: ${target_name}")
+  endif()
+  target_link_options("${target_name}" PRIVATE
+    "LINKER:-z,max-page-size=${SNAPCUT_ANDROID_MAX_PAGE_SIZE}"
+  )
+endfunction()
+
 set(SNAPCUT_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 set(SNAPCUT_FLAC_VERSION "1.5.0" CACHE STRING "Pinned libFLAC source version")
 set(SNAPCUT_LAME_VERSION "4.0" CACHE STRING "Pinned LAME source version")
@@ -107,6 +120,7 @@ target_compile_definitions(mp3lame PRIVATE HAVE_CONFIG_H=1)
 target_compile_options(mp3lame PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(mp3lame PRIVATE "LINKER:--gc-sections")
 target_link_libraries(mp3lame PRIVATE m)
+snapcut_enable_16k_page_alignment(mp3lame)
 
 add_library(snapcut_codec SHARED
   snapcut_codec_jni.cpp
@@ -134,3 +148,4 @@ target_link_libraries(snapcut_codec PRIVATE
   ${ANDROID_LOG_LIBRARY}
   m
 )
+snapcut_enable_16k_page_alignment(snapcut_codec)

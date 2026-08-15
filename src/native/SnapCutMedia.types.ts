@@ -1,6 +1,7 @@
 import type {
   AacProfile,
   ExportPreflightResult,
+  FadeDurationMs,
   M4aExportPlan,
   SnapCutExportFormat,
   SnapCutExportMode,
@@ -43,6 +44,9 @@ export const SNAP_CUT_MEDIA_ERROR_CODES = [
   'M4A_BOUNDARY_ALIGNMENT_FAILED',
   'M4A_MUX_FAILED',
   'M4A_VERIFICATION_FAILED',
+  'AAC_ENCODER_INIT_FAILED',
+  'AAC_ENCODER_FAILED',
+  'AAC_VERIFICATION_FAILED',
   'EXPORT_DECODE_FAILED',
   'EXPORT_RESAMPLE_FAILED',
   'FLAC_ENCODER_INIT_FAILED',
@@ -153,21 +157,29 @@ export interface NativePreviewClip {
   audioFileUri: string;
   startMs: number;
   endMs: number;
+  trackId: 'track-1' | 'track-2';
+  timelineStartMs: number;
+  gain: number;
+  fadeInMs: FadeDurationMs;
+  fadeOutMs: FadeDurationMs;
 }
 
 export interface LoadPreviewRequest {
   playbackSessionId: string;
   generation: number;
+  controlRevision: number;
   clips: NativePreviewClip[];
 }
 
 export interface PreviewCommandRequest {
   playbackSessionId: string;
   generation: number;
+  controlRevision: number;
 }
 
 export interface SeekPreviewRequest extends PreviewCommandRequest {
   positionMs: number;
+  resumeAfterSeek: boolean;
 }
 
 export interface ExportPreflightRequest {
@@ -198,7 +210,7 @@ export interface ExportAudioResult {
   actualDurationMs: number;
   sampleRateHz: number;
   channelCount: 1 | 2;
-  bitrateKbps: 320 | null;
+  bitrateKbps: 160 | 320 | null;
   bitsPerSample: 24 | null;
   maxBoundaryAdjustmentMs: number;
   fileSizeBytes: number;

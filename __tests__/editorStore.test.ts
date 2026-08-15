@@ -29,7 +29,8 @@ const source = (
 });
 
 const project = (sources: SnapCutSource[]): SnapCutProject => ({
-  schemaVersion: 3,
+  schemaVersion: 6,
+  trackCount: 2,
   namePromptCompleted: true,
   id: '11111111-1111-4111-8111-111111111111',
   name: 'Editor test',
@@ -66,6 +67,26 @@ describe('editor store', () => {
     expect(useEditorStore.getState().selectionEndMs).toBe(12_345);
   });
 
+  it('bounds the overview-controlled visible span between one second and the project', () => {
+    useEditorStore.getState().setTimelineNavigation(30_000, 100, 60_000);
+    expect(useEditorStore.getState()).toMatchObject({
+      timelineCursorMs: 30_000,
+      timelineVisibleSpanMs: 1_000,
+    });
+
+    useEditorStore.getState().setTimelineNavigation(100_000, 100_000, 60_000);
+    expect(useEditorStore.getState()).toMatchObject({
+      timelineCursorMs: 60_000,
+      timelineVisibleSpanMs: 60_000,
+    });
+
+    useEditorStore.getState().setTimelineNavigation(500, 100, 750);
+    expect(useEditorStore.getState()).toMatchObject({
+      timelineCursorMs: 500,
+      timelineVisibleSpanMs: 750,
+    });
+  });
+
   it('keeps exact integer-ms boundaries valid while editing', () => {
     const selected = source('11111111-1111-4111-8111-111111111114', 10_000);
     const store = useEditorStore.getState();
@@ -82,6 +103,11 @@ describe('editor store', () => {
         sourceId: selected.id,
         startMs: 123,
         endMs: 987,
+        trackId: 'track-1',
+        timelineStartMs: 0,
+        gain: 1,
+        fadeInMs: 0,
+        fadeOutMs: 0,
       },
       selected,
     );
@@ -158,6 +184,36 @@ describe('editor store', () => {
       waveformLoadState: 'ready',
       waveform,
     });
+  });
+
+  it('keeps the selected track and caches ready waveforms for the project timeline', async () => {
+    const first = source('11111111-1111-4111-8111-111111111120', 30_000, 'ready');
+    const second = source('11111111-1111-4111-8111-111111111121', 30_000, 'ready');
+    const waveform = {
+      schemaVersion: 1 as const,
+      durationMs: 30_000,
+      binCount: 8192 as const,
+      rms: Array.from({ length: 8192 }, () => 0.25),
+      peak: Array.from({ length: 8192 }, () => 0.5),
+    };
+    configureEditorServices({
+      waveformReader: { loadWaveform: jest.fn().mockResolvedValue(waveform) },
+    });
+    const twoTrackProject = { ...project([first, second]), trackCount: 2 as const };
+    useEditorStore.getState().syncProject(twoTrackProject);
+    useEditorStore.getState().selectTrack('track-2');
+    await useEditorStore.getState().loadProjectWaveforms(twoTrackProject);
+
+    expect(useEditorStore.getState()).toMatchObject({
+      selectedTrackId: 'track-2',
+      waveformLoadStatesBySourceId: {
+        [first.id]: 'ready',
+        [second.id]: 'ready',
+      },
+    });
+
+    useEditorStore.getState().syncProject(twoTrackProject);
+    expect(useEditorStore.getState().selectedTrackId).toBe('track-2');
   });
 });
 

@@ -268,7 +268,11 @@ class SnapCutMediaModule : Module() {
 
     AsyncFunction("seekPreview") Coroutine { request: SeekPreviewRequest ->
       requireExistingPreview(
-        PreviewCommandRequest(request.playbackSessionId, request.generation)
+        PreviewCommandRequest(
+          request.playbackSessionId,
+          request.generation,
+          request.controlRevision
+        )
       )
       if (request.positionMs < 0L) throw mediaError(SnapCutMediaError.INVALID_REQUEST)
       preview().seek(request)
@@ -276,8 +280,8 @@ class SnapCutMediaModule : Module() {
 
     AsyncFunction("releasePreview") Coroutine { request: PreviewCommandRequest ->
       if (jobs.isCurrentPreview(request.playbackSessionId, request.generation)) {
-        previewController?.release(request)
-        jobs.releasePreview(request.playbackSessionId, request.generation)
+        val released = previewController?.release(request) ?: true
+        if (released) jobs.releasePreview(request.playbackSessionId, request.generation)
       }
       Unit
     }
@@ -395,13 +399,20 @@ class SnapCutMediaModule : Module() {
   }
 
   private fun requireCurrentPreviewRequest(request: LoadPreviewRequest) {
-    if (request.clips.isEmpty() || !jobs.beginPreview(request.playbackSessionId, request.generation)) {
+    if (
+      request.clips.isEmpty() ||
+      request.controlRevision < 0L ||
+      !jobs.beginPreview(request.playbackSessionId, request.generation)
+    ) {
       throw mediaError(SnapCutMediaError.INVALID_REQUEST)
     }
   }
 
   private fun requireExistingPreview(request: PreviewCommandRequest) {
-    if (!jobs.isCurrentPreview(request.playbackSessionId, request.generation)) {
+    if (
+      request.controlRevision < 0L ||
+      !jobs.isCurrentPreview(request.playbackSessionId, request.generation)
+    ) {
       throw mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED)
     }
   }

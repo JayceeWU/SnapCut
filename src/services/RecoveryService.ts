@@ -1,5 +1,7 @@
 import { parseSnapCutProject } from '@/domain/migrations';
 import { projectIndexSchema, sourceFileSchema, waveformFileSchema } from '@/domain/schemas';
+import { sourceMetadataMatchesProjectSource } from '@/domain/sourceRelations';
+import { compositionDurationMs } from '@/domain/timeline';
 import type { SnapCutProject } from '@/domain/types';
 import { AtomicJsonStore } from '@/repositories/AtomicJsonStore';
 import {
@@ -165,7 +167,7 @@ export class RecoveryService {
       } else if (
         sourceFile.projectId !== project.id ||
         sourceFile.source.id !== source.id ||
-        JSON.stringify(sourceFile.source) !== JSON.stringify(source)
+        !sourceMetadataMatchesProjectSource(sourceFile.source, source)
       ) {
         issues.add('SOURCE_RELATION_MISMATCH');
       }
@@ -354,7 +356,7 @@ export class RecoveryService {
         if (
           sourceFile !== null &&
           sourceFile.projectId === project.id &&
-          JSON.stringify(sourceFile.source) === JSON.stringify(source)
+          sourceMetadataMatchesProjectSource(sourceFile.source, source)
         ) {
           return true;
         }
@@ -398,7 +400,7 @@ export class RecoveryService {
     return (
       sourceFile !== null &&
       sourceFile.projectId === project.id &&
-      JSON.stringify(sourceFile.source) === JSON.stringify(source)
+      sourceMetadataMatchesProjectSource(sourceFile.source, source)
     );
   }
 
@@ -503,10 +505,7 @@ export class RecoveryService {
         updatedAt: project.updatedAt,
         sourceCount: project.sources.length,
         clipCount: project.clips.length,
-        compositionDurationMs: project.clips.reduce(
-          (duration, clip) => duration + clip.endMs - clip.startMs,
-          0,
-        ),
+        compositionDurationMs: compositionDurationMs(project.clips),
       })),
     });
     try {

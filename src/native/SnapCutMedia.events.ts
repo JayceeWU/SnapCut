@@ -22,6 +22,7 @@ export interface ProgressEvent extends NativeJobEvent {
 
 export interface PlaybackStatusEvent extends NativeJobEvent {
   playbackSessionId: string;
+  controlRevision: number;
   mode: 'selection' | 'composition';
   loaded: boolean;
   playing: boolean;

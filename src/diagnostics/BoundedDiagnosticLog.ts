@@ -25,6 +25,7 @@ export interface DiagnosticFields {
   nativeStage?: string;
   causeCategory?: string;
   contractFields?: string;
+  repairIssues?: string;
 }
 
 export interface DiagnosticEntry {
@@ -54,6 +55,7 @@ const SAFE_FIELD_KEYS = new Set<keyof DiagnosticFields>([
   'nativeStage',
   'causeCategory',
   'contractFields',
+  'repairIssues',
 ]);
 const SAFE_VALUE = z.union([z.string().max(80), z.number().finite(), z.boolean()]);
 const diagnosticEntrySchema = z

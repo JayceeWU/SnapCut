@@ -35,4 +35,19 @@ describe('bounded diagnostic privacy', () => {
       }),
     ).toEqual({ available: true });
   });
+
+  it('allows repair issue names without allowing source paths', () => {
+    expect(
+      sanitizeDiagnosticFields({
+        operation: 'repository',
+        code: 'PROJECT_NEEDS_REPAIR',
+        repairIssues: 'SOURCE_RELATION_MISMATCH',
+        path: 'file:///private/source.m4a',
+      } as never),
+    ).toEqual({
+      operation: 'repository',
+      code: 'PROJECT_NEEDS_REPAIR',
+      repairIssues: 'SOURCE_RELATION_MISMATCH',
+    });
+  });
 });

@@ -1,4 +1,5 @@
 export * from './editorStore';
+export * from './clipEditHistoryStore';
 export * from './playbackStore';
 export * from './projectStore';
 export * from './importStore';

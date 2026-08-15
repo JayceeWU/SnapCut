@@ -8,6 +8,7 @@ import { ErrorBanner } from './ErrorBanner';
 
 interface ImportProgressModalProps {
   visible: boolean;
+  completionCloseVisible?: boolean;
   onCancel: () => void;
   onClose: () => void;
   onRetry: () => void;
@@ -32,6 +33,7 @@ function ImportKeepAwake() {
 
 export function ImportProgressModal({
   visible,
+  completionCloseVisible = false,
   onCancel,
   onClose,
   onRetry,
@@ -84,7 +86,7 @@ export function ImportProgressModal({
                 <AppButton label={copy.import.closeAction} onPress={onClose} variant="ghost" />
                 <AppButton label={copy.import.retryAction} onPress={onRetry} />
               </>
-            ) : terminal ? (
+            ) : stage === 'complete' && !completionCloseVisible ? null : terminal ? (
               <AppButton label={copy.import.closeAction} onPress={onClose} />
             ) : (
               <AppButton

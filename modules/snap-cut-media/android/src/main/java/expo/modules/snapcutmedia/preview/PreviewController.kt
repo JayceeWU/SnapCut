@@ -15,13 +15,20 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.SilenceMediaSource
 import expo.modules.snapcutmedia.errors.SnapCutMediaError
 import expo.modules.snapcutmedia.errors.SnapCutMediaException
 import expo.modules.snapcutmedia.errors.mediaError
 import expo.modules.snapcutmedia.models.LoadPreviewRequest
 import expo.modules.snapcutmedia.models.PreviewCommandRequest
 import expo.modules.snapcutmedia.models.SeekPreviewRequest
+import expo.modules.snapcutmedia.timeline.TimelineAudio
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -30,30 +37,41 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.CountDownLatch
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.abs
 
 internal fun interface PreviewEventSink {
   fun emit(eventName: String, body: Map<String, Any?>)
 }
 
-/**
- * Owns SnapCut's only ExoPlayer. All player access is serialized onto the main
- * looper; decoded audio and waveform data never cross the React Native bridge.
- */
+/** Owns at most two synchronized native players, one per project track. */
 internal class PreviewController(
   context: Context,
   private val eventSink: PreviewEventSink
 ) {
+  private data class TrackPlayer(
+    val timeline: PreviewTrackPlaylist,
+    val processor: PreviewEnvelopeAudioProcessor,
+    val player: ExoPlayer,
+    val listener: Player.Listener
+  )
+
   private data class ActivePreview(
     val token: PreviewSessionToken,
     val timeline: PreviewTimeline,
+    val tracks: MutableList<TrackPlayer> = mutableListOf(),
     var prepared: Boolean = false,
     var completed: Boolean = false,
     var completionArmed: Boolean = false,
+    var desiredPlaying: Boolean = false,
+    var resumeAfterSeek: Boolean = false,
+    var lastReportedPlaying: Boolean? = null,
     var nextSequence: Long = 1L
   )
 
   private data class PendingPrepare(
     val token: PreviewSessionToken,
+    val expectedPlayers: Int,
+    val readyPlayers: MutableSet<ExoPlayer>,
     val continuation: CancellableContinuation<Unit>
   )
 
@@ -61,34 +79,33 @@ internal class PreviewController(
   private val mainHandler = Handler(Looper.getMainLooper())
   private val sourcePolicy = CommittedPreviewSource(applicationContext.filesDir)
   private val sessionGate = PreviewSessionGate()
+  private val pauseCoordinator = PreviewPauseCoordinator()
   private val audioManager = applicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
   private val platformAudioAttributes = android.media.AudioAttributes.Builder()
     .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
     .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
     .build()
-  private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { change ->
-    onAudioFocusChange(change)
-  }
+  private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener(::onAudioFocusChange)
   private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
     .setAudioAttributes(platformAudioAttributes)
     .setWillPauseWhenDucked(true)
     .setOnAudioFocusChangeListener(audioFocusChangeListener, mainHandler)
     .build()
 
-  private var player: ExoPlayer? = null
   private var active: ActivePreview? = null
   private var pendingPrepare: PendingPrepare? = null
   private var focusHeld = false
   private var noisyReceiverRegistered = false
   private var destroyed = false
   private var suppressPlayerEvents = false
-  private var sessionPlayerListener: Player.Listener? = null
 
   private val progressTicker = object : Runnable {
     override fun run() {
-      val currentPlayer = player
-      if (currentPlayer?.isPlaying != true || active == null) return
-      emitStatus(stage = "playing")
+      val current = active ?: return
+      val master = current.tracks.firstOrNull()?.player ?: return
+      if (!master.isPlaying) return
+      synchronizeFollowers(current)
+      emitStatus("playing")
       mainHandler.postDelayed(this, PROGRESS_INTERVAL_MS)
     }
   }
@@ -107,7 +124,8 @@ internal class PreviewController(
 
   suspend fun play(request: PreviewCommandRequest) = onMain {
     val current = requireActive(request)
-    val currentPlayer = requireNotNull(player)
+    if (!sessionGate.acceptControl(current.token, request.controlRevision)) return@onMain
+    current.desiredPlaying = true
     if (!current.prepared) throw mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED)
     if (audioManager.requestAudioFocus(focusRequest) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
       throw mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED)
@@ -116,8 +134,10 @@ internal class PreviewController(
     try {
       current.completed = false
       current.completionArmed = true
-      if (currentPlayer.playbackState == Player.STATE_ENDED) currentPlayer.seekTo(0, 0L)
-      currentPlayer.play()
+      if (current.tracks.any { it.player.playbackState == Player.STATE_ENDED }) {
+        seekAll(current, 0L, resumeAfterReady = false)
+      }
+      current.tracks.asReversed().forEach { it.player.play() }
     } catch (error: Throwable) {
       current.completionArmed = false
       abandonAudioFocus()
@@ -126,41 +146,50 @@ internal class PreviewController(
   }
 
   suspend fun pause(request: PreviewCommandRequest) = onMain {
-    requireActive(request)
-    pausePlayer("paused")
+    val current = requireActive(request)
+    if (!sessionGate.acceptControl(current.token, request.controlRevision)) return@onMain
+    current.desiredPlaying = false
+    pausePlayers("paused")
   }
 
   suspend fun seek(request: SeekPreviewRequest) = onMain {
     val current = requireActive(
-      PreviewCommandRequest(request.playbackSessionId, request.generation)
+      PreviewCommandRequest(
+        request.playbackSessionId,
+        request.generation,
+        request.controlRevision
+      )
     )
+    if (!sessionGate.acceptControl(current.token, request.controlRevision)) return@onMain
     if (!current.prepared) throw mediaError(SnapCutMediaError.PREVIEW_SEEK_FAILED)
-    val target = current.timeline.seekTarget(request.positionMs)
     try {
       current.completed = false
-      requireNotNull(player).seekTo(target.clipIndex, target.positionInClipMs)
+      current.desiredPlaying = request.resumeAfterSeek
+      if (!request.resumeAfterSeek) pausePlayers("seek-paused", emit = false)
+      seekAll(
+        current,
+        request.positionMs.coerceIn(0L, current.timeline.durationMs),
+        resumeAfterReady = request.resumeAfterSeek
+      )
+      emitStatus("seek")
     } catch (error: Throwable) {
       throw mediaError(SnapCutMediaError.PREVIEW_SEEK_FAILED, cause = error)
     }
-    if (!current.completed) emitStatusAt(target, stage = "seek")
   }
 
-  /** Completes only after the player no longer references project source files. */
-  suspend fun release(request: PreviewCommandRequest) = onMain {
+  suspend fun release(request: PreviewCommandRequest): Boolean = onMain {
     val token = PreviewSessionToken(request.playbackSessionId, request.generation)
-    if (!sessionGate.isCurrent(token)) return@onMain
-    detachMediaItems()
+    if (!sessionGate.isCurrent(token)) return@onMain false
+    if (!sessionGate.acceptControl(token, request.controlRevision)) return@onMain false
+    releasePlayers()
     failPendingPrepare(mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED))
     sessionGate.release(token)
     active = null
+    true
   }
 
-  /** Lifecycle teardown is synchronous so no player callback outlives the module. */
   fun destroy() {
-    if (Looper.myLooper() == Looper.getMainLooper()) {
-      destroyOnMain()
-      return
-    }
+    if (Looper.myLooper() == Looper.getMainLooper()) return destroyOnMain()
     val completed = CountDownLatch(1)
     mainHandler.post {
       try {
@@ -174,55 +203,62 @@ internal class PreviewController(
 
   private suspend fun load(mode: PreviewMode, request: LoadPreviewRequest) = onMain {
     checkNotDestroyed()
-    val token = sessionGate.begin(request.playbackSessionId, request.generation)
+    val token = sessionGate.begin(
+      request.playbackSessionId,
+      request.generation,
+      request.controlRevision
+    )
       ?: throw mediaError(SnapCutMediaError.INVALID_REQUEST)
     if (active?.token == token) return@onMain
     try {
-      // A newer load owns the native session immediately. Detach the previous
-      // sources before validating the replacement so even a failed load cannot
-      // leave a project file referenced by an unreachable stale session.
-      detachMediaItems()
+      releasePlayers()
       failPendingPrepare(mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED))
       active = null
 
+      if (mode == PreviewMode.COMPOSITION) TimelineAudio.validate(request.clips)
       val clips = request.clips.map { clip ->
-        val privateFile = sourcePolicy.requireCommittedFile(clip.audioFileUri, clip.sourceId)
+        val file = sourcePolicy.requireCommittedFile(clip.audioFileUri, clip.sourceId)
         PreviewClip(
-          clipId = clip.clipId,
-          sourceId = clip.sourceId,
-          audioFileUri = Uri.fromFile(privateFile).toString(),
-          startMs = clip.startMs,
-          endMs = clip.endMs
+          clip.clipId,
+          clip.sourceId,
+          Uri.fromFile(file).toString(),
+          clip.startMs,
+          clip.endMs,
+          clip.trackId,
+          clip.timelineStartMs,
+          clip.gain,
+          clip.fadeInMs,
+          clip.fadeOutMs
         )
       }
       val timeline = PreviewTimeline.create(mode, clips)
-      val currentPlayer = ensurePlayer()
-      active = ActivePreview(token, timeline)
-      attachPlayerListener(currentPlayer, token)
-
-      val mediaItems = clips.map { clip ->
-        MediaItem.Builder()
-          .setMediaId(clip.clipId)
-          .setUri(clip.audioFileUri)
-          .setClippingConfiguration(
-            MediaItem.ClippingConfiguration.Builder()
-              .setStartPositionMs(clip.startMs)
-              .setEndPositionMs(clip.endMs)
-              .build()
-          )
-          .build()
+      val current = ActivePreview(token, timeline)
+      active = current
+      timeline.tracks.forEach { track ->
+        val processor = PreviewEnvelopeAudioProcessor(
+          track.items.mapNotNull(TrackPlaylistItem::clip)
+        )
+        val player = buildPlayer(processor)
+        processor.requestSeekPositionMs(0L)
+        val listener = buildListener(token, player, current.tracks.isEmpty())
+        player.addListener(listener)
+        val sources = buildMediaSources(track)
+        player.setMediaSources(sources, true)
+        current.tracks += TrackPlayer(track, processor, player, listener)
       }
-      currentPlayer.setMediaItems(mediaItems, true)
+      if (current.tracks.isEmpty() || current.tracks.size > MAX_TRACKS) {
+        throw mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED)
+      }
 
       suspendCancellableCoroutine { continuation ->
-        pendingPrepare = PendingPrepare(token, continuation)
+        pendingPrepare = PendingPrepare(token, current.tracks.size, mutableSetOf(), continuation)
         continuation.invokeOnCancellation {
           mainHandler.post {
             if (pendingPrepare?.continuation === continuation) pendingPrepare = null
           }
         }
         try {
-          currentPlayer.prepare()
+          current.tracks.forEach { it.player.prepare() }
         } catch (error: Throwable) {
           pendingPrepare = null
           continuation.resumeWithException(
@@ -232,7 +268,7 @@ internal class PreviewController(
       }
     } catch (error: Throwable) {
       if (sessionGate.isCurrent(token)) {
-        detachMediaItems()
+        releasePlayers()
         failPendingPrepare(mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED))
         active = null
         sessionGate.release(token)
@@ -245,174 +281,211 @@ internal class PreviewController(
     }
   }
 
-  private fun ensurePlayer(): ExoPlayer {
-    checkNotDestroyed()
-    player?.let { return it }
+  private fun buildPlayer(processor: PreviewEnvelopeAudioProcessor): ExoPlayer {
     registerNoisyReceiver()
-    return ExoPlayer.Builder(applicationContext)
-      .build()
-      .also { created ->
-        created.setAudioAttributes(
-          AudioAttributes.Builder()
-            .setUsage(C.USAGE_MEDIA)
-            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-            .build(),
-          false
-        )
-        created.repeatMode = Player.REPEAT_MODE_OFF
-        created.shuffleModeEnabled = false
-        player = created
-      }
+    val renderersFactory = object : DefaultRenderersFactory(applicationContext) {
+      override fun buildAudioSink(
+        context: Context,
+        enableFloatOutput: Boolean,
+        enableAudioTrackPlaybackParams: Boolean
+      ): AudioSink = DefaultAudioSink.Builder(context)
+        .setAudioProcessors(arrayOf(processor))
+        .build()
+    }
+    return ExoPlayer.Builder(applicationContext, renderersFactory).build().also { created ->
+      created.setAudioAttributes(
+        AudioAttributes.Builder()
+          .setUsage(C.USAGE_MEDIA)
+          .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+          .build(),
+        false
+      )
+      created.repeatMode = Player.REPEAT_MODE_OFF
+      created.shuffleModeEnabled = false
+    }
   }
 
-  private fun attachPlayerListener(currentPlayer: ExoPlayer, token: PreviewSessionToken) {
-    detachPlayerListener()
-    val listener = object : Player.Listener {
-      override fun onPlaybackStateChanged(playbackState: Int) {
-        if (!acceptPlayerCallback(token)) return
-        val current = active ?: return
-        if (current.completed) return
-        when (playbackState) {
-          Player.STATE_READY -> {
-            current.prepared = true
-            emitStatus(stage = "ready")
-            completePendingPrepare(token)
-          }
-          Player.STATE_ENDED -> if (current.completionArmed) finishPreview(token)
-          Player.STATE_BUFFERING -> if (current.prepared) emitStatus(stage = "buffering")
-          else -> Unit
-        }
-      }
-
-      override fun onIsPlayingChanged(isPlaying: Boolean) {
-        if (!acceptPreparedPlayerCallback(token)) return
-        if (active?.completed == true) return
-        stopProgressEvents()
-        if (isPlaying) mainHandler.post(progressTicker)
-        emitStatus(stage = if (isPlaying) "playing" else "paused")
-      }
-
-      override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-        if (!acceptPreparedPlayerCallback(token)) return
-        if (active?.completed == true) return
-        emitStatus(stage = "item-transition")
-      }
-
-      override fun onPlayerError(error: PlaybackException) {
-        if (!acceptPlayerCallback(token)) return
-        val stableError = mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED, cause = error)
-        emitError(SnapCutMediaError.PREVIEW_PREPARE_FAILED)
-        failPendingPrepare(stableError)
-        detachMediaItems()
-        sessionGate.release(token)
-        active = null
+  private fun buildMediaSources(track: PreviewTrackPlaylist): List<MediaSource> {
+    val factory = DefaultMediaSourceFactory(applicationContext)
+    return track.items.mapIndexed { index, item ->
+      val clip = item.clip
+      if (clip == null) {
+        SilenceMediaSource.Factory()
+          .setDurationUs(Math.multiplyExact(item.durationMs, 1_000L))
+          .setTag("${track.trackId.value}:gap:$index")
+          .createMediaSource()
+      } else {
+        factory.createMediaSource(
+          MediaItem.Builder()
+            .setMediaId(clip.clipId)
+            .setUri(clip.audioFileUri)
+            .setClippingConfiguration(
+              MediaItem.ClippingConfiguration.Builder()
+                .setStartPositionMs(clip.startMs)
+                .setEndPositionMs(clip.endMs)
+                .build()
+            )
+            .build()
+        )
       }
     }
-    currentPlayer.addListener(listener)
-    sessionPlayerListener = listener
   }
 
-  private fun acceptPlayerCallback(token: PreviewSessionToken): Boolean =
-    !suppressPlayerEvents && active?.token == token && sessionGate.isCurrent(token)
+  private fun buildListener(
+    token: PreviewSessionToken,
+    player: ExoPlayer,
+    master: Boolean
+  ): Player.Listener = object : Player.Listener {
+    override fun onPlaybackStateChanged(playbackState: Int) {
+      if (!acceptCallback(token)) return
+      val current = active ?: return
+      when (playbackState) {
+        Player.STATE_READY -> {
+          markReady(token, player)
+          maybeResumeAfterSeek(current)
+        }
+        Player.STATE_ENDED -> if (master && current.completionArmed) finishPreview(token)
+        Player.STATE_BUFFERING -> if (master && current.prepared && current.desiredPlaying) {
+          emitStatus("buffering")
+        }
+        else -> Unit
+      }
+    }
 
-  private fun acceptPreparedPlayerCallback(token: PreviewSessionToken): Boolean =
-    acceptPlayerCallback(token) && active?.prepared == true
+    override fun onIsPlayingChanged(isPlaying: Boolean) {
+      if (!master || !acceptPreparedCallback(token) || active?.completed == true) return
+      val current = active ?: return
+      if (isPlaying && !current.desiredPlaying) {
+        current.tracks.forEach { it.player.pause() }
+        stopProgressEvents()
+        return
+      }
+      if (current.lastReportedPlaying == isPlaying) return
+      stopProgressEvents()
+      if (isPlaying) mainHandler.post(progressTicker)
+      emitStatus(if (isPlaying) "playing" else "paused")
+    }
 
-  private fun detachPlayerListener() {
-    val listener = sessionPlayerListener ?: return
-    player?.removeListener(listener)
-    sessionPlayerListener = null
+    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+      if (
+        master &&
+        acceptPreparedCallback(token) &&
+        active?.completed != true &&
+        active?.desiredPlaying == true
+      ) {
+        emitStatus("item-transition")
+      }
+    }
+
+    override fun onPlayerError(error: PlaybackException) {
+      if (!acceptCallback(token)) return
+      val stable = mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED, cause = error)
+      emitError(SnapCutMediaError.PREVIEW_PREPARE_FAILED)
+      failPendingPrepare(stable)
+      releasePlayers()
+      sessionGate.release(token)
+      active = null
+    }
   }
 
-  private fun requireActive(request: PreviewCommandRequest): ActivePreview {
-    checkNotDestroyed()
-    val token = PreviewSessionToken(request.playbackSessionId, request.generation)
-    return active?.takeIf { it.token == token && sessionGate.isCurrent(token) }
-      ?: throw mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED)
-  }
-
-  private fun completePendingPrepare(token: PreviewSessionToken) {
+  private fun markReady(token: PreviewSessionToken, player: ExoPlayer) {
     val pending = pendingPrepare?.takeIf { it.token == token } ?: return
+    pending.readyPlayers += player
+    if (pending.readyPlayers.size != pending.expectedPlayers) return
     pendingPrepare = null
+    active?.takeIf { it.token == token }?.prepared = true
+    emitStatus("ready")
     if (pending.continuation.isActive) pending.continuation.resume(Unit)
   }
 
-  private fun failPendingPrepare(error: Throwable) {
-    val pending = pendingPrepare ?: return
-    pendingPrepare = null
-    if (pending.continuation.isActive) pending.continuation.resumeWithException(error)
+  private fun seekAll(
+    current: ActivePreview,
+    positionMs: Long,
+    resumeAfterReady: Boolean = current.tracks.any { it.player.isPlaying }
+  ) {
+    val previousSuppression = suppressPlayerEvents
+    suppressPlayerEvents = true
+    try {
+      current.resumeAfterSeek = resumeAfterReady
+      if (resumeAfterReady) current.tracks.forEach { it.player.pause() }
+      current.tracks.forEach { track ->
+        val target = track.timeline.seekTarget(positionMs)
+        track.processor.requestSeekPositionMs(positionMs)
+        track.player.seekTo(target.itemIndex, target.positionInItemMs)
+      }
+    } finally {
+      suppressPlayerEvents = previousSuppression
+    }
+    if (resumeAfterReady) mainHandler.post { maybeResumeAfterSeek(current) }
+  }
+
+  private fun synchronizeFollowers(current: ActivePreview) {
+    val master = current.tracks.firstOrNull() ?: return
+    val masterPosition = globalPosition(master)
+    current.tracks.drop(1).forEach { follower ->
+      if (abs(globalPosition(follower) - masterPosition) > MAX_TRACK_DRIFT_MS) {
+        seekAll(current, masterPosition, resumeAfterReady = true)
+        return
+      }
+    }
+  }
+
+  private fun globalPosition(track: TrackPlayer): Long = if (
+    track.player.currentMediaItemIndex in track.timeline.items.indices
+  ) {
+    track.timeline.globalPosition(track.player.currentMediaItemIndex, track.player.currentPosition)
+  } else {
+    0L
   }
 
   private fun emitStatus(stage: String, didJustFinish: Boolean = false) {
     val current = active ?: return
     if (!sessionGate.isCurrent(current.token)) return
-    val currentPlayer = player
-    val index = currentPlayer?.currentMediaItemIndex ?: C.INDEX_UNSET
-    val position = if (current.prepared && index in current.timeline.clips.indices) {
-      current.timeline.position(index, currentPlayer?.currentPosition ?: 0L)
-    } else null
+    val master = current.tracks.firstOrNull()
+    val positionMs = if (current.prepared && master != null) globalPosition(master) else 0L
+    val position = current.timeline.positionAt(positionMs)
+    val playing = master?.player?.isPlaying == true
+    val controlRevision = sessionGate.currentControlRevision(current.token) ?: return
     dispatchEvent(
       PLAYBACK_EVENT,
-      playbackEvent(
-        current = current,
-        stage = stage,
-        loaded = current.prepared,
-        playing = currentPlayer?.isPlaying == true,
-        positionMs = position?.compositionPositionMs ?: 0L,
-        clipIndex = position?.clipIndex,
-        clipId = position?.clipId,
-        didJustFinish = didJustFinish
+      mapOf(
+        "jobId" to current.token.playbackSessionId,
+        "operation" to "preview",
+        "sequence" to current.nextSequence++,
+        "stage" to stage,
+        "generation" to current.token.generation,
+        "playbackSessionId" to current.token.playbackSessionId,
+        "controlRevision" to controlRevision,
+        "mode" to current.timeline.mode.wireValue,
+        "loaded" to current.prepared,
+        "playing" to playing,
+        "positionMs" to position.compositionPositionMs,
+        "durationMs" to current.timeline.durationMs,
+        "currentClipIndex" to position.clipIndex,
+        "currentClipId" to position.clipId,
+        "didJustFinish" to didJustFinish
       )
     )
+    current.lastReportedPlaying = playing
   }
 
-  private fun emitStatusAt(
-    target: PreviewSeekTarget,
-    stage: String,
-    didJustFinish: Boolean = false
-  ) {
+  private fun finishPreview(token: PreviewSessionToken) {
+    if (!sessionGate.isCurrent(token)) return
     val current = active ?: return
-    if (!sessionGate.isCurrent(current.token)) return
-    dispatchEvent(
-      PLAYBACK_EVENT,
-      playbackEvent(
-        current = current,
-        stage = stage,
-        loaded = current.prepared,
-        playing = player?.isPlaying == true,
-        positionMs = target.compositionPositionMs,
-        clipIndex = target.clipIndex,
-        clipId = current.timeline.clips[target.clipIndex].clipId,
-        didJustFinish = didJustFinish
-      )
-    )
+    if (current.completed) return
+    current.completed = true
+    current.completionArmed = false
+    current.desiredPlaying = false
+    suppressPlayerEvents = true
+    try {
+      current.tracks.forEach { it.player.pause() }
+      abandonAudioFocus()
+      seekAll(current, 0L, resumeAfterReady = false)
+    } finally {
+      suppressPlayerEvents = false
+    }
+    emitStatus("completed", didJustFinish = true)
   }
-
-  private fun playbackEvent(
-    current: ActivePreview,
-    stage: String,
-    loaded: Boolean,
-    playing: Boolean,
-    positionMs: Long,
-    clipIndex: Int?,
-    clipId: String?,
-    didJustFinish: Boolean
-  ): Map<String, Any?> = mapOf(
-    "jobId" to current.token.playbackSessionId,
-    "operation" to "preview",
-    "sequence" to current.nextSequence++,
-    "stage" to stage,
-    "generation" to current.token.generation,
-    "playbackSessionId" to current.token.playbackSessionId,
-    "mode" to current.timeline.mode.wireValue,
-    "loaded" to loaded,
-    "playing" to playing,
-    "positionMs" to positionMs,
-    "durationMs" to current.timeline.durationMs,
-    "currentClipIndex" to clipIndex,
-    "currentClipId" to clipId,
-    "didJustFinish" to didJustFinish
-  )
 
   private fun emitError(error: SnapCutMediaError) {
     val current = active ?: return
@@ -431,26 +504,23 @@ internal class PreviewController(
     )
   }
 
-  private fun finishPreview(token: PreviewSessionToken) {
-    if (!sessionGate.isCurrent(token)) return
-    val current = active ?: return
-    if (current.completed) return
-    current.completed = true
-    current.completionArmed = false
-    val currentPlayer = player ?: return
-    suppressPlayerEvents = true
-    try {
-      currentPlayer.pause()
-      abandonAudioFocus()
-      currentPlayer.seekTo(0, 0L)
-    } finally {
-      suppressPlayerEvents = false
-    }
-    emitStatusAt(
-      PreviewSeekTarget(0, 0L, 0L),
-      stage = "completed",
-      didJustFinish = true
-    )
+  private fun requireActive(request: PreviewCommandRequest): ActivePreview {
+    checkNotDestroyed()
+    val token = PreviewSessionToken(request.playbackSessionId, request.generation)
+    return active?.takeIf { it.token == token && sessionGate.isCurrent(token) }
+      ?: throw mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED)
+  }
+
+  private fun acceptCallback(token: PreviewSessionToken): Boolean =
+    !suppressPlayerEvents && active?.token == token && sessionGate.isCurrent(token)
+
+  private fun acceptPreparedCallback(token: PreviewSessionToken): Boolean =
+    acceptCallback(token) && active?.prepared == true
+
+  private fun failPendingPrepare(error: Throwable) {
+    val pending = pendingPrepare ?: return
+    pendingPrepare = null
+    if (pending.continuation.isActive) pending.continuation.resumeWithException(error)
   }
 
   private fun onAudioFocusChange(change: Int) {
@@ -458,10 +528,7 @@ internal class PreviewController(
       change == AudioManager.AUDIOFOCUS_LOSS ||
       change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT ||
       change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK
-    ) {
-      pauseForInterruption("audio-focus-lost")
-    }
-    // AUDIOFOCUS_GAIN intentionally does nothing: SnapCut never auto-resumes.
+    ) pauseForInterruption("audio-focus-lost")
   }
 
   private fun pauseForInterruption(stage: String) {
@@ -469,16 +536,56 @@ internal class PreviewController(
       mainHandler.post { pauseForInterruption(stage) }
       return
     }
-    if (active == null) return
-    pausePlayer(stage)
+    val current = active ?: return
+    sessionGate.advanceControl(current.token) ?: return
+    current.desiredPlaying = false
+    pausePlayers(stage)
   }
 
-  private fun pausePlayer(stage: String, emit: Boolean = true) {
-    active?.completionArmed = false
-    player?.pause()
+  private fun pausePlayers(stage: String, emit: Boolean = true) {
+    val current = active ?: return
+    val previousSuppression = suppressPlayerEvents
+    suppressPlayerEvents = true
+    try {
+      pauseCoordinator.pause(
+        trackCount = current.tracks.size,
+        stopProgressTicker = ::stopProgressEvents,
+        clearResumeIntent = {
+          current.completionArmed = false
+          current.resumeAfterSeek = false
+        },
+        pauseTrack = { index -> current.tracks[index].player.pause() },
+        abandonAudioFocus = ::abandonAudioFocus,
+        acknowledgePaused = { if (emit) emitStatus(stage) }
+      )
+    } finally {
+      suppressPlayerEvents = previousSuppression
+    }
+  }
+
+  private fun releasePlayers() {
     stopProgressEvents()
-    abandonAudioFocus()
-    if (emit) emitStatus(stage)
+    pausePlayers("detached", emit = false)
+    active?.tracks?.forEach { track ->
+      runCatching { track.player.removeListener(track.listener) }
+      runCatching { track.player.stop() }
+      runCatching { track.player.clearMediaItems() }
+      runCatching { track.player.release() }
+    }
+    active?.tracks?.clear()
+  }
+
+  private fun maybeResumeAfterSeek(current: ActivePreview) {
+    if (
+      active !== current ||
+      !current.resumeAfterSeek ||
+      !current.desiredPlaying ||
+      !current.prepared ||
+      current.completed ||
+      current.tracks.any { it.player.playbackState != Player.STATE_READY }
+    ) return
+    current.resumeAfterSeek = false
+    current.tracks.asReversed().forEach { it.player.play() }
   }
 
   private fun abandonAudioFocus() {
@@ -486,22 +593,10 @@ internal class PreviewController(
     focusHeld = false
   }
 
-  private fun stopProgressEvents() {
-    mainHandler.removeCallbacks(progressTicker)
-  }
+  private fun stopProgressEvents() = mainHandler.removeCallbacks(progressTicker)
 
   private fun dispatchEvent(eventName: String, body: Map<String, Any?>) {
     runCatching { eventSink.emit(eventName, body) }
-  }
-
-  private fun detachMediaItems() {
-    stopProgressEvents()
-    detachPlayerListener()
-    pausePlayer("detached", emit = false)
-    player?.let { currentPlayer ->
-      currentPlayer.stop()
-      if (currentPlayer.mediaItemCount > 0) currentPlayer.clearMediaItems()
-    }
   }
 
   private fun registerNoisyReceiver() {
@@ -519,10 +614,8 @@ internal class PreviewController(
   private fun destroyOnMain() {
     if (destroyed) return
     destroyed = true
-    detachMediaItems()
+    releasePlayers()
     failPendingPrepare(mediaError(SnapCutMediaError.PREVIEW_PREPARE_FAILED))
-    player?.release()
-    player = null
     active = null
     sessionGate.clear()
     if (noisyReceiverRegistered) {
@@ -539,7 +632,9 @@ internal class PreviewController(
     withContext(Dispatchers.Main.immediate) { block() }
 
   private companion object {
-    const val PROGRESS_INTERVAL_MS = 100L
+    const val MAX_TRACKS = 2
+    const val MAX_TRACK_DRIFT_MS = 30L
+    const val PROGRESS_INTERVAL_MS = 50L
     const val PLAYBACK_EVENT = "onPlaybackStatus"
     const val ERROR_EVENT = "onNativeError"
   }

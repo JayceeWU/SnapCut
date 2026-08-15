@@ -9,6 +9,7 @@ import { MemoryStorageFileSystem } from './support/MemoryStorageFileSystem';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const SOURCE_ID = '22222222-2222-4222-8222-222222222222';
+const CLIP_ID = '33333333-3333-4333-8333-333333333333';
 const JOB_ID = 'job-1';
 const NOW = '2026-08-12T23:00:00.000Z';
 const HASH = 'a'.repeat(64);
@@ -21,13 +22,14 @@ function verifier(
 
 function project(name = 'Project'): SnapCutProject {
   return {
-    schemaVersion: 3,
+    schemaVersion: 6,
     namePromptCompleted: true,
     id: PROJECT_ID,
     name,
     createdAt: NOW,
     updatedAt: NOW,
     sources: [],
+    trackCount: 2,
     clips: [],
     lastExport: null,
   };
@@ -143,10 +145,10 @@ describe('atomic JSON storage and startup recovery', () => {
     );
   });
 
-  it('atomically persists a recovered schema v2 project as v3 without prompting', async () => {
+  it('atomically persists a recovered schema v2 project as v6 without prompting', async () => {
     const { fileSystem, layout } = setup();
     const current = project('Legacy v2');
-    const { namePromptCompleted: _completed, ...withoutPrompt } = current;
+    const { namePromptCompleted: _completed, trackCount: _trackCount, ...withoutPrompt } = current;
     fileSystem.ensureDirectory(layout.projectDirectoryUri(PROJECT_ID));
     fileSystem.ensureDirectory(layout.projectSourcesDirectoryUri(PROJECT_ID));
     fileSystem.writeText(
@@ -162,11 +164,16 @@ describe('atomic JSON storage and startup recovery', () => {
     ) as Record<string, unknown>;
 
     expect(report.projects[0]?.project).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 6,
+      trackCount: 2,
       name: 'Legacy v2',
       namePromptCompleted: true,
     });
-    expect(persisted).toMatchObject({ schemaVersion: 3, namePromptCompleted: true });
+    expect(persisted).toMatchObject({
+      schemaVersion: 6,
+      trackCount: 2,
+      namePromptCompleted: true,
+    });
     expect(fileSystem.fileExists(`${layout.projectMetadataUri(PROJECT_ID)}.tmp`)).toBe(false);
     expect(fileSystem.fileExists(`${layout.projectMetadataUri(PROJECT_ID)}.bak`)).toBe(false);
   });
@@ -260,6 +267,51 @@ describe('atomic JSON storage and startup recovery', () => {
     expect(fileSystem.fileExists(layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID))).toBe(
       false,
     );
+  });
+
+  it('promotes and completes a journal when only project waveform status advanced', async () => {
+    const { fileSystem, layout } = setup();
+    await seedProject(
+      layout,
+      {
+        ...project(),
+        sources: [{ ...source(), waveformStatus: 'processing' }],
+      },
+      '.tmp',
+    );
+    seedFinalSource(fileSystem, layout);
+    seedImportJournal(fileSystem, layout);
+
+    const report = await new RecoveryService(layout, {
+      privateMediaVerifier: verifier(),
+    }).recover();
+
+    expect(report.projects[0]?.project.sources[0]?.waveformStatus).toBe('processing');
+    expect(report.projects[0]?.repairStatus).toEqual({ state: 'ready', issues: [] });
+    expect(fileSystem.fileExists(layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID))).toBe(
+      false,
+    );
+  });
+
+  it('treats project waveform status as dynamic while keeping source metadata strict', async () => {
+    const { fileSystem, layout } = setup();
+    const processingSource = { ...source(), waveformStatus: 'processing' as const };
+    await seedProject(layout, { ...project(), sources: [processingSource] });
+    seedFinalSource(fileSystem, layout);
+
+    const recovered = await new RecoveryService(layout, {
+      privateMediaVerifier: verifier(),
+    }).recover();
+    expect(recovered.projects[0]?.repairStatus).toEqual({ state: 'ready', issues: [] });
+
+    await seedProject(layout, {
+      ...project(),
+      sources: [{ ...processingSource, sampleRateHz: 48_000 }],
+    });
+    const mismatched = await new RecoveryService(layout, {
+      privateMediaVerifier: verifier(),
+    }).recover();
+    expect(mismatched.projects[0]?.repairStatus.issues).toContain('SOURCE_RELATION_MISMATCH');
   });
 
   it('does not promote temporary metadata when native hash verification is unavailable', async () => {
@@ -460,11 +512,26 @@ describe('ProjectRepository', () => {
     const committed = await repository.finalizeImport({
       jobId: JOB_ID,
       projectId: PROJECT_ID,
+      clipId: CLIP_ID,
+      targetTrackId: 'track-1',
       source: source(),
       privateAudioSha256: HASH,
     });
 
     expect(committed.sources).toHaveLength(1);
+    expect(committed.clips).toEqual([
+      expect.objectContaining({
+        id: CLIP_ID,
+        sourceId: SOURCE_ID,
+        startMs: 0,
+        endMs: 1_000,
+        trackId: 'track-1',
+        timelineStartMs: 0,
+        gain: 1,
+        fadeInMs: 0,
+        fadeOutMs: 0,
+      }),
+    ]);
     expect(JSON.stringify(committed)).not.toContain('content://');
     expect(fileSystem.fileExists(layout.sourceAudioUri(PROJECT_ID, SOURCE_ID, 'source.m4a'))).toBe(
       true,
@@ -494,6 +561,8 @@ describe('ProjectRepository', () => {
     const committed = await repository.finalizeImport({
       jobId: JOB_ID,
       projectId: PROJECT_ID,
+      clipId: CLIP_ID,
+      targetTrackId: 'track-1',
       source: source(),
       privateAudioSha256: HASH,
     });
@@ -511,6 +580,8 @@ describe('ProjectRepository', () => {
       repository.finalizeImport({
         jobId: JOB_ID,
         projectId: PROJECT_ID,
+        clipId: CLIP_ID,
+        targetTrackId: 'track-1',
         source: source(),
         privateAudioSha256: HASH,
       }),
@@ -534,6 +605,8 @@ describe('ProjectRepository', () => {
       repository.finalizeImport({
         jobId: JOB_ID,
         projectId: PROJECT_ID,
+        clipId: CLIP_ID,
+        targetTrackId: 'track-1',
         source: source(),
         privateAudioSha256: HASH,
       }),
@@ -556,6 +629,8 @@ describe('ProjectRepository', () => {
       repository.finalizeImport({
         jobId: JOB_ID,
         projectId: PROJECT_ID,
+        clipId: CLIP_ID,
+        targetTrackId: 'track-1',
         source: source(),
         privateAudioSha256: HASH,
       }),
@@ -576,6 +651,8 @@ describe('ProjectRepository', () => {
       repository.finalizeImport({
         jobId: JOB_ID,
         projectId: PROJECT_ID,
+        clipId: CLIP_ID,
+        targetTrackId: 'track-1',
         source: source(),
         privateAudioSha256: HASH,
       }),
@@ -597,6 +674,8 @@ describe('ProjectRepository', () => {
     const committed = await repository.finalizeImport({
       jobId: JOB_ID,
       projectId: PROJECT_ID,
+      clipId: CLIP_ID,
+      targetTrackId: 'track-1',
       source: source(),
       privateAudioSha256: HASH,
     });

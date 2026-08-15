@@ -1,17 +1,8 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 
-import {
-  colors,
-  copy,
-  formatDuration,
-  minimumTouchTarget,
-  radii,
-  spacing,
-  typography,
-} from '@/constants';
-
-import { editorWorkspaceLayout } from './editorWorkspaceLayout';
+import { colors, copy, minimumTouchTarget, radii, spacing, typography } from '@/constants';
+import { formatTimelineTime } from '@/utils/time';
 
 interface PlaybackControlsProps {
   available: boolean;
@@ -134,7 +125,8 @@ export function PlaybackControls({
   return (
     <View style={styles.container} testID="composition-transport">
       <Text numberOfLines={1} style={styles.position} testID="transport-position">
-        {formatDuration(positionMs)} / {formatDuration(durationMs)}
+        {formatTimelineTime(Math.max(0, Math.round(positionMs)))} /{' '}
+        {formatTimelineTime(Math.max(0, Math.round(durationMs)))}
       </Text>
       <View style={styles.actions}>
         <TransportButton
@@ -168,7 +160,7 @@ export function PlaybackControls({
 
 const styles = StyleSheet.create({
   container: {
-    height: editorWorkspaceLayout.transportControlHeight,
+    minHeight: minimumTouchTarget,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',

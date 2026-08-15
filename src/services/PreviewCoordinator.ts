@@ -128,26 +128,60 @@ const commandRequest = (active: ActivePreview) => ({
 });
 
 const clipKey = (clip: SnapCutClip): string =>
-  [
-    clip.id,
-    clip.sourceId,
-    clip.startMs,
-    clip.endMs,
-    clip.trackId,
-    clip.timelineStartMs,
-    clip.gain,
-    clip.fadeInMs,
-    clip.fadeOutMs,
-  ].join(':');
+  [clip.id, clip.sourceId, clip.startMs, clip.endMs].join(':');
 
 const selectionKey = (projectId: string, clip: SnapCutClip): string =>
   `selection:${projectId}:${clipKey(clip)}`;
 
 const compositionKey = (project: SnapCutProject): string =>
-  `composition:${project.id}:${project.clips.map(clipKey).sort().join('|')}`;
+  `composition:${project.id}:${project.clips.map(clipKey).join('|')}`;
 
 const clampInteger = (value: number, minimum: number, maximum: number): number =>
   Math.min(Math.max(Math.round(Number.isFinite(value) ? value : 0), minimum), maximum);
+
+/**
+ * Keeps the native two-track engine private while adapting the persisted v7
+ * clip order to one gap-free, unity-gain Track 1 timeline.
+ */
+export function buildNativeSequentialClips(
+  project: SnapCutProject,
+  clips: readonly SnapCutClip[],
+  sourceResolver: CommittedSourceResolverPort,
+): NativePreviewClip[] {
+  let timelineStartMs = 0;
+  return clips.map((clipInput) => {
+    const clip = validateClipRange(clipInput, project.sources);
+    const source = project.sources.find(({ id }) => id === clip.sourceId);
+    if (!source) {
+      throw new PreviewCoordinatorError(
+        'MISSING_COMMITTED_SOURCE',
+        `Clip source is not committed in project ${project.id}.`,
+      );
+    }
+    const durationMs = clip.endMs - clip.startMs;
+    const timelineEndMs = timelineStartMs + durationMs;
+    if (!Number.isSafeInteger(timelineEndMs)) {
+      throw new PreviewCoordinatorError(
+        'PREVIEW_COMMAND_FAILED',
+        'Composition duration exceeds the supported range.',
+      );
+    }
+    const nativeClip: NativePreviewClip = {
+      clipId: clip.id,
+      sourceId: source.id,
+      audioFileUri: sourceResolver.resolveSourceAudioUri(project, source),
+      startMs: clip.startMs,
+      endMs: clip.endMs,
+      trackId: 'track-1',
+      timelineStartMs,
+      gain: 1,
+      fadeInMs: 0,
+      fadeOutMs: 0,
+    };
+    timelineStartMs = timelineEndMs;
+    return nativeClip;
+  });
+}
 
 export class PreviewCoordinator {
   private readonly media: PreviewMediaPort;
@@ -254,11 +288,6 @@ export class PreviewCoordinator {
       sourceId: source.id,
       startMs: 0,
       endMs: source.durationMs,
-      trackId: 'track-1',
-      timelineStartMs: 0,
-      gain: 1,
-      fadeInMs: 0,
-      fadeOutMs: 0,
     });
   }
 
@@ -486,32 +515,17 @@ export class PreviewCoordinator {
       throw new PreviewCoordinatorError('PREVIEW_UNAVAILABLE', 'Native preview is unavailable.');
     }
 
-    const orderedClips =
-      mode === 'selection'
-        ? clips
-        : [...clips].sort(
-            (left, right) =>
-              left.timelineStartMs - right.timelineStartMs ||
-              left.trackId.localeCompare(right.trackId) ||
-              left.id.localeCompare(right.id),
-          );
+    const orderedClips = clips;
     let nativeClips: NativePreviewClip[];
     try {
-      nativeClips = orderedClips.map((clip) => this.nativeClip(project, clip));
+      nativeClips = buildNativeSequentialClips(project, orderedClips, this.sourceResolver);
     } catch (error) {
       usePlaybackStore.getState().fail();
       throw error;
     }
 
     const previous = this.active;
-    const durationMs = Math.max(
-      0,
-      ...orderedClips.map((clip) =>
-        mode === 'selection'
-          ? clip.endMs - clip.startMs
-          : clip.timelineStartMs + clip.endMs - clip.startMs,
-      ),
-    );
+    const durationMs = compositionDurationMs(orderedClips);
     const active: ActivePreview = {
       projectId: project.id,
       playbackSessionId: this.idFactory(),
@@ -642,28 +656,6 @@ export class PreviewCoordinator {
     if (this.isActive(active)) this.active = null;
   }
 
-  private nativeClip(project: SnapCutProject, clip: SnapCutClip): NativePreviewClip {
-    const source = project.sources.find(({ id }) => id === clip.sourceId);
-    if (!source) {
-      throw new PreviewCoordinatorError(
-        'MISSING_COMMITTED_SOURCE',
-        `Clip source is not committed in project ${project.id}.`,
-      );
-    }
-    return {
-      clipId: clip.id,
-      sourceId: source.id,
-      audioFileUri: this.sourceResolver.resolveSourceAudioUri(project, source),
-      startMs: clip.startMs,
-      endMs: clip.endMs,
-      trackId: clip.trackId,
-      timelineStartMs: clip.timelineStartMs,
-      gain: clip.gain,
-      fadeInMs: clip.fadeInMs,
-      fadeOutMs: clip.fadeOutMs,
-    };
-  }
-
   private handleStatus(event: PlaybackStatusEvent): void {
     const active = this.active;
     if (
@@ -706,6 +698,13 @@ export class PreviewCoordinator {
       stage: event.stage,
       code: event.code,
     });
+    // PreviewController releases its players and native session before it
+    // emits this terminal event. Drop the matching JS session immediately so
+    // a retry always creates a fresh playbackSessionId instead of issuing
+    // commands to a native session that no longer exists. A late rejection
+    // from the original load then fails the isActive guard and cannot clear
+    // this visible error.
+    this.active = null;
     usePlaybackStore.getState().fail();
   }
 

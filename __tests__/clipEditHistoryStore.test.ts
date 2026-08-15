@@ -1,4 +1,11 @@
-import { addClip, addSource, createProject, updateClip } from '@/domain';
+import {
+  addClip,
+  addSource,
+  createProject,
+  deleteClip,
+  removeUnusedSource,
+  updateClip,
+} from '@/domain';
 import type { SnapCutProject, SnapCutSource } from '@/domain';
 import { MAX_CLIP_EDIT_HISTORY, useClipEditHistoryStore } from '@/stores';
 
@@ -40,11 +47,6 @@ function project(id = PROJECT_A_ID): SnapCutProject {
     sourceId: SOURCE_ID,
     startMs: 1_000,
     endMs: 2_000,
-    trackId: 'track-1',
-    timelineStartMs: 0,
-    gain: 1,
-    fadeInMs: 0,
-    fadeOutMs: 0,
   });
 }
 
@@ -147,5 +149,36 @@ describe('clip edit history store', () => {
     expect(current.clips[0]?.endMs).toBe(2_010);
     expect(useClipEditHistoryStore.getState().canUndo).toBe(false);
     expect(useClipEditHistoryStore.getState().previewUndo(current)).toEqual(current);
+  });
+
+  test('clears snapshots after a formerly referenced source is deleted successfully', () => {
+    const withReferencedSource = project();
+    useClipEditHistoryStore.getState().syncProject(withReferencedSource.id);
+    useClipEditHistoryStore.getState().record(withReferencedSource);
+
+    const withoutClip = deleteClip(withReferencedSource, CLIP_ID);
+    const afterSuccessfulSourceDelete = removeUnusedSource(withoutClip, SOURCE_ID);
+    useClipEditHistoryStore.getState().clearProjectHistory(withReferencedSource.id);
+
+    expect(useClipEditHistoryStore.getState()).toMatchObject({
+      projectId: withReferencedSource.id,
+      canUndo: false,
+      canRedo: false,
+    });
+    expect(useClipEditHistoryStore.getState().previewUndo(afterSuccessfulSourceDelete)).toEqual(
+      afterSuccessfulSourceDelete,
+    );
+    expect(useClipEditHistoryStore.getState().previewRedo(afterSuccessfulSourceDelete)).toEqual(
+      afterSuccessfulSourceDelete,
+    );
+  });
+
+  test('does not clear another project history', () => {
+    const before = project();
+    useClipEditHistoryStore.getState().record(before);
+
+    useClipEditHistoryStore.getState().clearProjectHistory(PROJECT_B_ID);
+
+    expect(useClipEditHistoryStore.getState()).toMatchObject({ canUndo: true, canRedo: false });
   });
 });

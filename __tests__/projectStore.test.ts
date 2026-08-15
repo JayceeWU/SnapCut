@@ -7,8 +7,7 @@ import {
 } from '@/stores';
 
 const createFixture = (id: string, name: string, updatedAt: string): SnapCutProject => ({
-  schemaVersion: 6,
-  trackCount: 2,
+  schemaVersion: 7,
   namePromptCompleted: true,
   id,
   name,
@@ -46,6 +45,28 @@ function createFakeRepository(seed: SnapCutProject[] = []): ProjectRepositoryPor
       if (!existing) throw new Error('missing');
       const project = { ...existing, name, updatedAt: '2026-08-12T21:00:00.000Z' };
       projects.set(id, project);
+      return project;
+    }),
+    renameSource: jest.fn((projectId: string, sourceId: string, displayName: string) => {
+      const existing = projects.get(projectId);
+      if (!existing) throw new Error('missing');
+      const project = {
+        ...existing,
+        sources: existing.sources.map((source) =>
+          source.id === sourceId ? { ...source, displayName } : source,
+        ),
+      };
+      projects.set(projectId, project);
+      return project;
+    }),
+    deleteSource: jest.fn((projectId: string, sourceId: string) => {
+      const existing = projects.get(projectId);
+      if (!existing) throw new Error('missing');
+      const project = {
+        ...existing,
+        sources: existing.sources.filter(({ id }) => id !== sourceId),
+      };
+      projects.set(projectId, project);
       return project;
     }),
     delete: jest.fn((id: string) => {
@@ -109,6 +130,74 @@ describe('project store repository coordination', () => {
 
     expect(await useProjectStore.getState().createProject('Failed')).toBeNull();
     expect(useProjectStore.getState().error).toBe('The project could not be created.');
+    expect(useProjectStore.getState().mutation).toBeNull();
+  });
+
+  it('renames and deletes a source through dedicated repository actions', async () => {
+    const project: SnapCutProject = {
+      ...createFixture('project', 'Sources', '2026-08-12T20:00:00.000Z'),
+      sources: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          displayName: 'Source 1',
+          originalMimeType: null,
+          sourceKind: 'm4a',
+          privateAudioFileName: 'source.m4a',
+          durationMs: 1_000,
+          codecMime: 'audio/mp4a-latm',
+          sampleRateHz: 48_000,
+          channelCount: 2,
+          encodedBitrateBps: 192_000,
+          pcmBitsPerSample: null,
+          aacProfile: 'aac-lc',
+          codecConfigFingerprint: null,
+          encoderDelayFrames: null,
+          encoderPaddingFrames: null,
+          privateAudioSha256: null,
+          fileSizeBytes: 1_024,
+          waveformFileName: 'waveform.json',
+          waveformStatus: 'pending',
+          createdAt: '2026-08-12T20:00:00.000Z',
+        },
+      ],
+    };
+    const repository = createFakeRepository([project]);
+    repository.getRepairStatus = jest
+      .fn()
+      .mockReturnValueOnce({
+        state: 'needs-repair',
+        issues: ['PRIVATE_MEDIA_MISSING_OR_EMPTY'],
+      })
+      .mockReturnValueOnce({ state: 'ready', issues: [] });
+    configureProjectRepository(repository);
+    await useProjectStore.getState().loadProject(project.id);
+    expect(useProjectStore.getState().repairStatuses[project.id]?.state).toBe('needs-repair');
+
+    expect(
+      await useProjectStore.getState().renameSource(project.id, project.sources[0]!.id, 'Voice'),
+    ).toBe(true);
+    expect(useProjectStore.getState().activeProject?.sources[0]?.displayName).toBe('Voice');
+    expect(await useProjectStore.getState().deleteSource(project.id, project.sources[0]!.id)).toBe(
+      true,
+    );
+    expect(useProjectStore.getState().activeProject?.sources).toEqual([]);
+    expect(repository.getRepairStatus).toHaveBeenCalledTimes(2);
+    expect(useProjectStore.getState().repairStatuses[project.id]).toEqual({
+      state: 'ready',
+      issues: [],
+    });
+  });
+
+  it('shows a stable source-in-use message without leaking repository detail', async () => {
+    const project = createFixture('project', 'Sources', '2026-08-12T20:00:00.000Z');
+    const repository = createFakeRepository([project]);
+    repository.deleteSource = jest.fn(() => {
+      throw Object.assign(new Error('private paths'), { code: 'SOURCE_IN_USE' });
+    });
+    configureProjectRepository(repository);
+
+    expect(await useProjectStore.getState().deleteSource(project.id, 'source')).toBe(false);
+    expect(useProjectStore.getState().error).toBe('Remove clips that use this source first.');
     expect(useProjectStore.getState().mutation).toBeNull();
   });
 

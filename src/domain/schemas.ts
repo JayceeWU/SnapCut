@@ -39,6 +39,13 @@ export const projectNameSchema = z.string().superRefine((value, context) => {
 });
 
 const nonEmptyStringSchema = z.string().trim().min(1);
+export const sourceDisplayNameSchema = z
+  .string()
+  .refine((value) => value === value.trim(), 'Source name must be trimmed')
+  .refine(
+    (value) => [...value].length >= 1 && [...value].length <= 255,
+    'Source name must contain 1 to 255 Unicode characters',
+  );
 const nullableNonEmptyStringSchema = nonEmptyStringSchema.nullable();
 const localFileNameSchema = z
   .string()
@@ -93,7 +100,7 @@ export const pcmBitsPerSampleSchema = z
 
 const snapCutSourceV1Shape = {
   id: uuidSchema,
-  displayName: nonEmptyStringSchema.max(255),
+  displayName: sourceDisplayNameSchema,
   originalMimeType: nullableNonEmptyStringSchema,
   sourceKind: sourceKindSchema,
   privateAudioFileName: localFileNameSchema,
@@ -111,36 +118,45 @@ const snapCutSourceV1Shape = {
 
 export const snapCutSourceV1Schema = z.object(snapCutSourceV1Shape).strict();
 
+const snapCutSourceShape = {
+  ...snapCutSourceV1Shape,
+  aacProfile: aacProfileSchema,
+  codecConfigFingerprint: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .nullable(),
+  encoderDelayFrames: nonNegativeIntegerSchema.nullable(),
+  encoderPaddingFrames: nonNegativeIntegerSchema.nullable(),
+  privateAudioSha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .nullable(),
+};
+
+function refineSourceCodecMetadata(
+  source: {
+    sourceKind: z.infer<typeof sourceKindSchema>;
+    aacProfile: z.infer<typeof aacProfileSchema>;
+    codecConfigFingerprint: string | null;
+  },
+  context: z.RefinementCtx,
+): void {
+  if (
+    (source.sourceKind === 'mp3' || source.sourceKind === 'flac' || source.sourceKind === 'wav') &&
+    (source.aacProfile !== null || source.codecConfigFingerprint !== null)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['codecConfigFingerprint'],
+      message: 'Non-AAC sources cannot persist AAC profile or codec configuration metadata',
+    });
+  }
+}
+
 export const snapCutSourceSchema = z
-  .object({
-    ...snapCutSourceV1Shape,
-    aacProfile: aacProfileSchema,
-    codecConfigFingerprint: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/u)
-      .nullable(),
-    encoderDelayFrames: nonNegativeIntegerSchema.nullable(),
-    encoderPaddingFrames: nonNegativeIntegerSchema.nullable(),
-    privateAudioSha256: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/u)
-      .nullable(),
-  })
+  .object(snapCutSourceShape)
   .strict()
-  .superRefine((source, context) => {
-    if (
-      (source.sourceKind === 'mp3' ||
-        source.sourceKind === 'flac' ||
-        source.sourceKind === 'wav') &&
-      (source.aacProfile !== null || source.codecConfigFingerprint !== null)
-    ) {
-      context.addIssue({
-        code: 'custom',
-        path: ['codecConfigFingerprint'],
-        message: 'Non-AAC sources cannot persist AAC profile or codec configuration metadata',
-      });
-    }
-  });
+  .superRefine(refineSourceCodecMetadata);
 
 export const snapCutClipV1Schema = z
   .object({
@@ -201,7 +217,7 @@ export const snapCutClipV5Schema = snapCutClipV1Schema
   .strict()
   .superRefine(refineTimelineClip);
 
-export const snapCutClipSchema = snapCutClipV1Schema
+export const snapCutClipV6Schema = snapCutClipV1Schema
   .extend({
     ...timelineClipShape,
     fadeInMs: fadeDurationMsSchema,
@@ -209,6 +225,8 @@ export const snapCutClipSchema = snapCutClipV1Schema
   })
   .strict()
   .superRefine(refineTimelineClip);
+
+export const snapCutClipSchema = snapCutClipV1Schema;
 
 export const snapCutExportFormatSchema = z.enum(['m4a', 'flac', 'mp3']);
 export const snapCutExportModeSchema = z.enum([
@@ -467,11 +485,22 @@ export const snapCutProjectV5Schema = z
   .strict()
   .superRefine(refineProjectRelations);
 
+export const snapCutProjectV6Schema = z
+  .object({
+    schemaVersion: z.literal(6),
+    ...projectCommonShape,
+    trackCount: trackCountSchema,
+    clips: z.array(snapCutClipV6Schema),
+    namePromptCompleted: z.boolean(),
+    sources: z.array(snapCutSourceSchema),
+  })
+  .strict()
+  .superRefine(refineProjectRelations);
+
 export const snapCutProjectSchema = z
   .object({
     schemaVersion: z.literal(CURRENT_PROJECT_SCHEMA_VERSION),
     ...projectCommonShape,
-    trackCount: trackCountSchema,
     clips: z.array(snapCutClipSchema),
     namePromptCompleted: z.boolean(),
     sources: z.array(snapCutSourceSchema),
@@ -481,12 +510,32 @@ export const snapCutProjectSchema = z
 
 export const sourceFileV1Schema = z
   .object({
-    schemaVersion: z.literal(SOURCE_FILE_SCHEMA_VERSION),
+    schemaVersion: z.literal(1),
     projectId: uuidSchema,
     source: snapCutSourceSchema,
   })
   .strict();
-export const sourceFileSchema = sourceFileV1Schema;
+
+const {
+  displayName: _displayNameSchema,
+  waveformFileName: _waveformFileNameSchema,
+  waveformStatus: _waveformStatusSchema,
+  ...immutableSourceManifestShape
+} = snapCutSourceShape;
+
+export const immutableSourceManifestSchema = z
+  .object(immutableSourceManifestShape)
+  .strict()
+  .superRefine(refineSourceCodecMetadata);
+
+export const sourceFileV2Schema = z
+  .object({
+    schemaVersion: z.literal(SOURCE_FILE_SCHEMA_VERSION),
+    projectId: uuidSchema,
+    source: immutableSourceManifestSchema,
+  })
+  .strict();
+export const sourceFileSchema = sourceFileV2Schema;
 
 const waveformValueSchema = z.number().finite().min(0).max(1);
 export const waveformFileV1Schema = z

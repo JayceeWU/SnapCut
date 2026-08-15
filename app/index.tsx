@@ -34,6 +34,8 @@ export default function ProjectListScreen() {
   const [deleteTarget, setDeleteTarget] = useState<SnapCutProject | null>(null);
   const [deleteCorruptTarget, setDeleteCorruptTarget] = useState<string | null>(null);
   const creatingRef = useRef(false);
+  const renameDialogVisible = renameTarget !== null;
+  const deleteDialogVisible = deleteTarget !== null || deleteCorruptTarget !== null;
 
   useEffect(() => {
     if (!initialized) {
@@ -107,7 +109,7 @@ export default function ProjectListScreen() {
                 />
               </View>
             </View>
-            {error ? (
+            {error && !renameDialogVisible && !deleteDialogVisible ? (
               <ErrorBanner
                 message={error}
                 onDismiss={clearError}
@@ -139,7 +141,10 @@ export default function ProjectListScreen() {
             {corruptProjectIds.map((projectId) => (
               <CorruptProjectCard
                 key={projectId}
-                onDelete={() => setDeleteCorruptTarget(projectId)}
+                onDelete={() => {
+                  clearError();
+                  setDeleteCorruptTarget(projectId);
+                }}
                 projectId={projectId}
               />
             ))}
@@ -147,9 +152,15 @@ export default function ProjectListScreen() {
         }
         renderItem={({ item }) => (
           <ProjectCard
-            onDelete={() => setDeleteTarget(item)}
+            onDelete={() => {
+              clearError();
+              setDeleteTarget(item);
+            }}
             onOpen={() => openProject(item.id)}
-            onRename={() => setRenameTarget(item)}
+            onRename={() => {
+              clearError();
+              setRenameTarget(item);
+            }}
             project={item}
             repairStatus={repairStatuses[item.id]}
           />
@@ -158,19 +169,27 @@ export default function ProjectListScreen() {
       <ProjectNameModal
         busy={mutation === 'rename'}
         initialName={renameTarget?.name}
-        onCancel={() => setRenameTarget(null)}
+        onCancel={() => {
+          setRenameTarget(null);
+          clearError();
+        }}
+        onDismissError={clearError}
         onSubmit={(name) => void submitRename(name)}
-        visible={renameTarget !== null}
+        operationError={error}
+        visible={renameDialogVisible}
       />
       <ConfirmDeleteModal
         busy={mutation === 'delete'}
         onCancel={() => {
           setDeleteTarget(null);
           setDeleteCorruptTarget(null);
+          clearError();
         }}
         onConfirm={() => void confirmDelete()}
+        onDismissError={clearError}
+        operationError={error}
         projectName={deleteTarget?.name ?? copy.projects.corruptTitle}
-        visible={deleteTarget !== null || deleteCorruptTarget !== null}
+        visible={deleteDialogVisible}
       />
     </SafeAreaView>
   );

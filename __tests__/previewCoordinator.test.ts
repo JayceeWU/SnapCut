@@ -52,28 +52,17 @@ const clipA: SnapCutClip = {
   sourceId: SOURCE_A_ID,
   startMs: 1_000,
   endMs: 4_000,
-  trackId: 'track-1',
-  timelineStartMs: 0,
-  gain: 1,
-  fadeInMs: 0,
-  fadeOutMs: 0,
 };
 const clipB: SnapCutClip = {
   id: CLIP_B_ID,
   sourceId: SOURCE_B_ID,
   startMs: 2_000,
   endMs: 7_000,
-  trackId: 'track-1',
-  timelineStartMs: 3_000,
-  gain: 1,
-  fadeInMs: 0,
-  fadeOutMs: 0,
 };
 
 function project(): SnapCutProject {
   return {
-    schemaVersion: 6,
-    trackCount: 2,
+    schemaVersion: 7,
     namePromptCompleted: true,
     id: PROJECT_ID,
     name: 'Preview',
@@ -584,13 +573,82 @@ describe('PreviewCoordinator', () => {
     expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain('private native detail');
   });
 
+  it('creates a fresh native session when retrying after a terminal player error', async () => {
+    const bridge = createMediaBridge();
+    const preview = coordinator(bridge);
+    await preview.loadSelection(project(), clipA);
+
+    bridge.emitError({
+      jobId: 'session-1',
+      operation: 'preview',
+      sequence: 1,
+      stage: 'prepare',
+      generation: 1,
+      code: 'PREVIEW_PREPARE_FAILED',
+      message: 'private native detail',
+    });
+
+    expect(usePlaybackStore.getState().error).not.toBeNull();
+    await expect(preview.loadSelection(project(), clipA)).resolves.toBe(true);
+    expect(bridge.loadSelectionPreview).toHaveBeenCalledTimes(2);
+    expect(bridge.loadSelectionPreview.mock.calls[1]?.[0]).toMatchObject({ generation: 2 });
+    expect(usePlaybackStore.getState().error).toBeNull();
+  });
+
+  it('keeps a terminal native error visible when the matching load rejects later', async () => {
+    const bridge = createMediaBridge();
+    const loading = deferred<undefined>();
+    bridge.loadSelectionPreview.mockImplementationOnce(() => loading.promise);
+    const preview = coordinator(bridge);
+    const loadPromise = preview.loadSelection(project(), clipA);
+
+    bridge.emitError({
+      jobId: 'session-1',
+      operation: 'preview',
+      sequence: 1,
+      stage: 'prepare',
+      generation: 1,
+      code: 'PREVIEW_PREPARE_FAILED',
+      message: 'private native detail',
+    });
+    loading.reject(new Error('late load rejection'));
+
+    await expect(loadPromise).resolves.toBe(false);
+    expect(usePlaybackStore.getState()).toMatchObject({
+      loading: false,
+      loaded: false,
+      error: expect.any(String),
+    });
+  });
+
   it('preserves composition order and drops an inconsistent clip position', async () => {
     const bridge = createMediaBridge();
     const preview = coordinator(bridge);
     await preview.loadComposition(project());
 
     const request = bridge.loadCompositionPreview.mock.calls[0]?.[0];
-    expect(request?.clips.map(({ clipId }) => clipId)).toEqual([CLIP_A_ID, CLIP_B_ID]);
+    expect(request?.clips).toEqual([
+      expect.objectContaining({
+        clipId: CLIP_A_ID,
+        startMs: 1_000,
+        endMs: 4_000,
+        trackId: 'track-1',
+        timelineStartMs: 0,
+        gain: 1,
+        fadeInMs: 0,
+        fadeOutMs: 0,
+      }),
+      expect.objectContaining({
+        clipId: CLIP_B_ID,
+        startMs: 2_000,
+        endMs: 7_000,
+        trackId: 'track-1',
+        timelineStartMs: 3_000,
+        gain: 1,
+        fadeInMs: 0,
+        fadeOutMs: 0,
+      }),
+    ]);
 
     bridge.emitStatus(
       status({
@@ -616,6 +674,20 @@ describe('PreviewCoordinator', () => {
       currentClipIndex: 1,
       currentClipId: CLIP_B_ID,
     });
+  });
+
+  it('reloads composition when canonical clip order changes', async () => {
+    const bridge = createMediaBridge();
+    const preview = coordinator(bridge);
+    const original = project();
+    await preview.loadComposition(original);
+    await preview.loadComposition({ ...original, clips: [clipB, clipA] });
+
+    expect(bridge.loadCompositionPreview).toHaveBeenCalledTimes(2);
+    expect(bridge.loadCompositionPreview.mock.calls[1]?.[0].clips).toEqual([
+      expect.objectContaining({ clipId: CLIP_B_ID, timelineStartMs: 0 }),
+      expect.objectContaining({ clipId: CLIP_A_ID, timelineStartMs: 5_000 }),
+    ]);
   });
 
   it('pauses in background, suppresses playing status, and does not auto-resume', async () => {

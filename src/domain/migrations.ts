@@ -5,6 +5,7 @@ import {
   snapCutProjectV3Schema,
   snapCutProjectV4Schema,
   snapCutProjectV5Schema,
+  snapCutProjectV6Schema,
 } from './schemas';
 import { MIN_CLIP_DURATION_MS } from './constants';
 import type {
@@ -16,6 +17,7 @@ import type {
   SnapCutProjectV3,
   SnapCutProjectV4,
   SnapCutProjectV5,
+  SnapCutProjectV6,
   SnapCutSource,
 } from './types';
 
@@ -109,63 +111,24 @@ export function migrateProjectV4ToV5(input: SnapCutProjectV4): SnapCutProjectV5 
   }) as SnapCutProjectV5;
 }
 
-export function migrateProjectV5ToV6(input: SnapCutProjectV5): SnapCutProject {
+export function migrateProjectV5ToV6(input: SnapCutProjectV5): SnapCutProjectV6 {
   const project = snapCutProjectV5Schema.parse(input) as SnapCutProjectV5;
-  return snapCutProjectSchema.parse({
+  return snapCutProjectV6Schema.parse({
     ...project,
     schemaVersion: 6,
-  }) as SnapCutProject;
+  }) as SnapCutProjectV6;
 }
 
 /**
- * Parses current data or applies the supported one-way migration chain. Future
- * schemas are rejected rather than silently downgraded.
+ * v7 is a deliberate storage-generation boundary. Older project JSON is never
+ * migrated into the new ordered-clip model; startup storage reset removes it
+ * before recovery. Rejecting it here also prevents a partial reset from making
+ * legacy metadata visible.
  */
 export function parseSnapCutProject(input: unknown): SnapCutProject {
-  if (!isRecord(input)) {
-    return snapCutProjectSchema.parse(input) as SnapCutProject;
+  if (isRecord(input) && input.schemaVersion !== 7) {
+    throw new Error('Legacy project metadata is not supported by storage generation v7.');
   }
-
-  if (input.schemaVersion === 1) {
-    return migrateProjectV5ToV6(
-      migrateProjectV4ToV5(
-        migrateProjectV3ToV4(
-          migrateProjectV2ToV3(
-            migrateProjectV1ToV2(snapCutProjectV1Schema.parse(input) as SnapCutProjectV1),
-          ),
-        ),
-      ),
-    );
-  }
-
-  if (input.schemaVersion === 2) {
-    return migrateProjectV5ToV6(
-      migrateProjectV4ToV5(
-        migrateProjectV3ToV4(
-          migrateProjectV2ToV3(snapCutProjectV2Schema.parse(input) as SnapCutProjectV2),
-        ),
-      ),
-    );
-  }
-
-  if (input.schemaVersion === 3) {
-    return migrateProjectV5ToV6(
-      migrateProjectV4ToV5(
-        migrateProjectV3ToV4(snapCutProjectV3Schema.parse(input) as SnapCutProjectV3),
-      ),
-    );
-  }
-
-  if (input.schemaVersion === 4) {
-    return migrateProjectV5ToV6(
-      migrateProjectV4ToV5(snapCutProjectV4Schema.parse(input) as SnapCutProjectV4),
-    );
-  }
-
-  if (input.schemaVersion === 5) {
-    return migrateProjectV5ToV6(snapCutProjectV5Schema.parse(input) as SnapCutProjectV5);
-  }
-
   return snapCutProjectSchema.parse(input) as SnapCutProject;
 }
 

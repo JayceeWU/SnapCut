@@ -4,6 +4,7 @@ import type { ExportPreflightResult, SnapCutProject } from '@/domain';
 import type {
   ExportAudioRequest,
   ExportAudioResult,
+  ExportPreflightRequest,
   NativeErrorEvent,
   NativeEventName,
   ProgressEvent,
@@ -23,8 +24,7 @@ function flushTasks(): Promise<void> {
 
 function project(): SnapCutProject {
   return {
-    schemaVersion: 6,
-    trackCount: 2,
+    schemaVersion: 7,
     namePromptCompleted: true,
     id: PROJECT_ID,
     name: 'Purple rehearsal',
@@ -60,11 +60,6 @@ function project(): SnapCutProject {
         sourceId: SOURCE_ID,
         startMs: 1_000,
         endMs: 5_000,
-        trackId: 'track-1',
-        timelineStartMs: 0,
-        gain: 1,
-        fadeInMs: 0,
-        fadeOutMs: 0,
       },
     ],
     lastExport: null,
@@ -177,7 +172,7 @@ class FakeAppState implements ExportAppStatePort {
 function bridge() {
   let progressListener: ((event: ProgressEvent) => void) | null = null;
   let errorListener: ((event: NativeErrorEvent) => void) | null = null;
-  const preflightExport = jest.fn(async () => preflight());
+  const preflightExport = jest.fn(async (_request: ExportPreflightRequest) => preflight());
   const cancelExportPreflight = jest.fn(async () => undefined);
   const exportAudio = jest.fn(async (_request: ExportAudioRequest) => exportResult);
   const cancelExport = jest.fn(async () => undefined);
@@ -233,7 +228,14 @@ describe('ExportCoordinator', () => {
         jobId: 'preflight-job',
         generation: 1,
         clips: [
-          expect.objectContaining({ audioFileUri: `file:///private/${SOURCE_ID}/source.m4a` }),
+          expect.objectContaining({
+            audioFileUri: `file:///private/${SOURCE_ID}/source.m4a`,
+            trackId: 'track-1',
+            timelineStartMs: 0,
+            gain: 1,
+            fadeInMs: 0,
+            fadeOutMs: 0,
+          }),
         ],
       }),
     );
@@ -255,6 +257,85 @@ describe('ExportCoordinator', () => {
     );
     expect(record).toEqual({ ...exportResult, exportedAt: '2026-08-12T21:00:00.000Z' });
     expect(releaseProject).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a preflight failure and does not call native preflight when preview release fails', async () => {
+    const native = bridge();
+    const releaseError = new Error('preview release failed');
+    const coordinator = new ExportCoordinator({
+      media: native.media,
+      sourceResolver: { resolveSourceAudioUri: () => 'file:///private/source.m4a' },
+      preview: { releaseProject: async () => Promise.reject(releaseError) },
+      appState: new FakeAppState(),
+      idFactory: () => 'preflight-release-job',
+    });
+
+    await expect(coordinator.prepare(project())).rejects.toBe(releaseError);
+
+    expect(native.preflightExport).not.toHaveBeenCalled();
+    expect(useExportStore.getState()).toMatchObject({
+      status: 'failed',
+      projectId: PROJECT_ID,
+      jobId: 'preflight-release-job',
+      error: 'SnapCut could not prepare export options.',
+    });
+  });
+
+  it('shows an export failure and does not call native export when preview release fails', async () => {
+    const native = bridge();
+    const releaseError = new Error('preview release failed');
+    const releaseProject = jest
+      .fn<Promise<void>, [string]>()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(releaseError);
+    const ids = ['preflight-job', 'export-release-job'];
+    const coordinator = new ExportCoordinator({
+      media: native.media,
+      sourceResolver: { resolveSourceAudioUri: () => 'file:///private/source.m4a' },
+      preview: { releaseProject },
+      appState: new FakeAppState(),
+      idFactory: () => ids.shift()!,
+    });
+
+    await coordinator.prepare(project());
+    await expect(coordinator.export(project())).rejects.toBe(releaseError);
+
+    expect(native.exportAudio).not.toHaveBeenCalled();
+    expect(useExportStore.getState()).toMatchObject({
+      status: 'failed',
+      projectId: PROJECT_ID,
+      jobId: 'export-release-job',
+      error: 'SnapCut could not finish this export.',
+    });
+  });
+
+  it('allows only one export to own the native job when Start is pressed twice', async () => {
+    const native = bridge();
+    let resolveExport!: (result: ExportAudioResult) => void;
+    native.exportAudio.mockImplementation(
+      () => new Promise((resolve) => (resolveExport = resolve)),
+    );
+    const ids = ['preflight-job', 'export-job'];
+    const coordinator = new ExportCoordinator({
+      media: native.media,
+      sourceResolver: { resolveSourceAudioUri: () => 'file:///private/source.m4a' },
+      preview: { releaseProject: async () => undefined },
+      appState: new FakeAppState(),
+      idFactory: () => ids.shift()!,
+    });
+
+    await coordinator.prepare(project());
+    const first = coordinator.export(project());
+    await expect(coordinator.export(project())).rejects.toThrow(/already active|not ready/i);
+    await flushTasks();
+
+    expect(native.exportAudio).toHaveBeenCalledTimes(1);
+    expect(native.exportAudio.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ jobId: 'export-job', generation: 2 }),
+    );
+
+    resolveExport(exportResult);
+    await expect(first).resolves.toEqual(expect.objectContaining({ format: 'm4a' }));
   });
 
   it('uses monotonic matching progress and cancels active export on background', async () => {
@@ -304,7 +385,7 @@ describe('ExportCoordinator', () => {
     expect(useExportStore.getState().status).toBe('failed');
   });
 
-  it('uses the absolute timeline end instead of summing clip durations', async () => {
+  it('uses the canonical clip order and summed composition duration', async () => {
     const native = bridge();
     const timelineProject = project();
     timelineProject.clips = [
@@ -312,7 +393,8 @@ describe('ExportCoordinator', () => {
       {
         ...timelineProject.clips[0]!,
         id: '11111111-1111-4111-8111-111111111116',
-        timelineStartMs: 7_000,
+        startMs: 7_000,
+        endMs: 9_000,
       },
     ];
     const coordinator = new ExportCoordinator({
@@ -324,7 +406,14 @@ describe('ExportCoordinator', () => {
     });
 
     await coordinator.prepare(timelineProject);
-    expect(useExportStore.getState().compositionDurationMs).toBe(11_000);
+    expect(useExportStore.getState().compositionDurationMs).toBe(6_000);
+    expect(native.preflightExport.mock.calls[0]?.[0].clips).toEqual([
+      expect.objectContaining({ clipId: CLIP_ID, timelineStartMs: 0 }),
+      expect.objectContaining({
+        clipId: '11111111-1111-4111-8111-111111111116',
+        timelineStartMs: 4_000,
+      }),
+    ]);
   });
 
   it('waits behind other heavy media work and does not start a cancelled queued preflight', async () => {
@@ -386,8 +475,12 @@ describe('ExportCoordinator', () => {
       message: 'private native detail',
       format: 'm4a',
     });
+    expect(useExportStore.getState().status).toBe('failed');
     resolveExport(exportResult);
-    await pending;
+    await expect(pending).rejects.toThrow(/newer export operation/i);
+    expect(useExportStore.getState().status).toBe('failed');
+    expect(() => coordinator.reset()).not.toThrow();
+    expect(useExportStore.getState().status).toBe('idle');
 
     expect(onDiagnostic).toHaveBeenCalledWith({
       operation: 'export',

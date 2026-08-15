@@ -2,7 +2,8 @@ import { randomUUID } from 'expo-crypto';
 import { z } from 'zod';
 
 import { snapCutSourceSchema } from '@/domain/schemas';
-import type { SnapCutProject, SnapCutSource, SourceKind, TrackId } from '@/domain/types';
+import { nextDefaultSourceName } from '@/domain/projects';
+import type { SnapCutProject, SnapCutSource, SourceKind } from '@/domain/types';
 import { SnapCutMediaContractError } from '@/native/SnapCutMedia';
 import type { NativeErrorEvent, ProgressEvent } from '@/native/SnapCutMedia.events';
 import type {
@@ -120,7 +121,6 @@ export interface ImportCoordinatorOptions {
   readonly waveformScheduler?: WaveformSchedulerPort;
   readonly jobIdFactory?: () => string;
   readonly sourceIdFactory?: () => string;
-  readonly clipIdFactory?: () => string;
   readonly now?: () => string;
   readonly maxSourceBytes?: number;
   readonly onDiagnostic?: (diagnostic: ImportDiagnostic) => void;
@@ -140,8 +140,6 @@ interface ActiveImport {
   readonly jobId: string;
   readonly projectId: string;
   readonly sourceId: string;
-  readonly clipId: string;
-  readonly targetTrackId: TrackId;
   readonly generation: number;
   stage: ImportProgressSnapshot['stage'];
   fraction: number | null;
@@ -243,7 +241,6 @@ export class ImportCoordinator {
   private readonly waveformScheduler: WaveformSchedulerPort | undefined;
   private readonly jobIdFactory: () => string;
   private readonly sourceIdFactory: () => string;
-  private readonly clipIdFactory: () => string;
   private readonly now: () => string;
   private readonly maxSourceBytes: number;
   private readonly onDiagnostic: ((diagnostic: ImportDiagnostic) => void) | undefined;
@@ -263,7 +260,6 @@ export class ImportCoordinator {
     this.waveformScheduler = options.waveformScheduler;
     this.jobIdFactory = options.jobIdFactory ?? randomUUID;
     this.sourceIdFactory = options.sourceIdFactory ?? randomUUID;
-    this.clipIdFactory = options.clipIdFactory ?? randomUUID;
     this.now = options.now ?? (() => new Date().toISOString());
     this.maxSourceBytes = options.maxSourceBytes ?? MAX_SOURCE_BYTES;
     this.onDiagnostic = options.onDiagnostic;
@@ -275,7 +271,7 @@ export class ImportCoordinator {
     );
   }
 
-  importIntoProject(projectId: string, targetTrackId: TrackId = 'track-1'): Promise<ImportOutcome> {
+  importIntoProject(projectId: string): Promise<ImportOutcome> {
     if (this.active !== null) {
       return Promise.resolve({
         status: 'failed',
@@ -283,7 +279,7 @@ export class ImportCoordinator {
       });
     }
     const project = this.repository.get(projectId);
-    if (project === null || (targetTrackId === 'track-2' && project.trackCount !== 2)) {
+    if (project === null) {
       return Promise.resolve({ status: 'failed', failure: importFailure('INVALID_REQUEST') });
     }
 
@@ -291,8 +287,6 @@ export class ImportCoordinator {
       jobId: this.jobIdFactory(),
       projectId,
       sourceId: this.sourceIdFactory(),
-      clipId: this.clipIdFactory(),
-      targetTrackId,
       generation: ++this.generation,
       stage: 'picking',
       fraction: null,
@@ -433,8 +427,6 @@ export class ImportCoordinator {
       const project = await this.repository.finalizeImport({
         jobId: context.jobId,
         projectId: context.projectId,
-        clipId: context.clipId,
-        targetTrackId: context.targetTrackId,
         source,
         privateAudioSha256: result.privateAudioSha256,
       });
@@ -509,13 +501,13 @@ export class ImportCoordinator {
   }
 
   private buildSource(context: ActiveImport, result: ImportResult): SnapCutSource {
-    const sourceNumber = (this.repository.get(context.projectId)?.sources.length ?? 0) + 1;
+    const sourceName = nextDefaultSourceName(this.repository.get(context.projectId)?.sources ?? []);
     return snapCutSourceSchema.parse({
       id: context.sourceId,
       // Provider display names are transient/private picker metadata. Persist a
       // deterministic project-local label so multiple sources remain usable
       // without leaking the user's original file name.
-      displayName: `Source ${sourceNumber}`,
+      displayName: sourceName,
       originalMimeType: null,
       sourceKind: result.sourceKind,
       privateAudioFileName: privateAudioFileName(result.sourceKind),

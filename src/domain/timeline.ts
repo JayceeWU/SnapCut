@@ -1,15 +1,15 @@
 import { assertIntegerMilliseconds } from '@/utils/time';
 
 import { DomainError } from './errors';
-import { snapCutClipSchema, trackIdSchema } from './schemas';
+import { snapCutClipSchema } from './schemas';
 import type { ClipTimelineEntry, SnapCutClip, TimelinePosition, TrackId } from './types';
 
-function checkedTimelineEnd(startMs: number, durationMs: number): number {
-  const endMs = startMs + durationMs;
-  if (!Number.isSafeInteger(endMs)) {
-    throw new DomainError('INVALID_CLIP_RANGE', 'Composition timeline exceeds safe integer range');
+function checkedAdd(left: number, right: number): number {
+  const result = left + right;
+  if (!Number.isSafeInteger(result)) {
+    throw new DomainError('INVALID_CLIP_RANGE', 'Composition duration exceeds safe integer range');
   }
-  return endMs;
+  return result;
 }
 
 export function clipDurationMs(clip: SnapCutClip): number {
@@ -17,153 +17,88 @@ export function clipDurationMs(clip: SnapCutClip): number {
   return parsed.endMs - parsed.startMs;
 }
 
+/** v7 has no persisted absolute position; this is the clip's own duration. */
 export function clipTimelineEndMs(clip: SnapCutClip): number {
-  const parsed = snapCutClipSchema.parse(clip) as SnapCutClip;
-  return checkedTimelineEnd(parsed.timelineStartMs, clipDurationMs(parsed));
+  return clipDurationMs(clip);
 }
 
 export function compositionDurationMs(clips: readonly SnapCutClip[]): number {
-  return clips.reduce((maximum, clip) => Math.max(maximum, clipTimelineEndMs(clip)), 0);
-}
-
-export function trackTimelineEndMs(
-  clips: readonly SnapCutClip[],
-  trackIdInput: TrackId,
-  excludeClipId?: string,
-): number {
-  const trackId = trackIdSchema.parse(trackIdInput) as TrackId;
-  return clips.reduce(
-    (maximum, clip) =>
-      clip.trackId === trackId && clip.id !== excludeClipId
-        ? Math.max(maximum, clipTimelineEndMs(clip))
-        : maximum,
-    0,
-  );
+  return clips.reduce((total, clip) => checkedAdd(total, clipDurationMs(clip)), 0);
 }
 
 export function buildClipTimeline(clips: readonly SnapCutClip[]): ClipTimelineEntry[] {
   const ids = new Set<string>();
-  return clips
-    .map((clip) => {
-      const parsed = snapCutClipSchema.parse(clip) as SnapCutClip;
-      if (ids.has(parsed.id)) {
-        throw new DomainError('DUPLICATE_ID', `Duplicate clip ID: ${parsed.id}`);
-      }
-      ids.add(parsed.id);
-      return {
-        clipId: parsed.id,
-        trackId: parsed.trackId,
-        compositionStartMs: parsed.timelineStartMs,
-        compositionEndMs: clipTimelineEndMs(parsed),
-      };
-    })
-    .sort(
-      (left, right) =>
-        left.compositionStartMs - right.compositionStartMs ||
-        left.trackId.localeCompare(right.trackId) ||
-        left.clipId.localeCompare(right.clipId),
-    );
+  let cursorMs = 0;
+  return clips.map((clip) => {
+    const parsed = snapCutClipSchema.parse(clip) as SnapCutClip;
+    if (ids.has(parsed.id)) {
+      throw new DomainError('DUPLICATE_ID', `Duplicate clip ID: ${parsed.id}`);
+    }
+    ids.add(parsed.id);
+    const compositionStartMs = cursorMs;
+    cursorMs = checkedAdd(cursorMs, clipDurationMs(parsed));
+    return {
+      clipId: parsed.id,
+      compositionStartMs,
+      compositionEndMs: cursorMs,
+    };
+  });
+}
+
+export function mapCompositionPosition(
+  clips: readonly SnapCutClip[],
+  compositionPositionMs: number,
+): TimelinePosition | null {
+  const positionMs = assertIntegerMilliseconds(compositionPositionMs, 'compositionPositionMs');
+  const timeline = buildClipTimeline(clips);
+  const entry = timeline.find(
+    (candidate) =>
+      positionMs >= candidate.compositionStartMs && positionMs < candidate.compositionEndMs,
+  );
+  if (!entry) return null;
+  const clipIndex = clips.findIndex(({ id }) => id === entry.clipId);
+  const clip = clips[clipIndex]!;
+  const positionInClipMs = positionMs - entry.compositionStartMs;
+  return {
+    clipId: entry.clipId,
+    clipIndex,
+    positionInClipMs,
+    sourcePositionMs: clip.startMs + positionInClipMs,
+    compositionPositionMs: positionMs,
+  };
 }
 
 export function mapTimelinePositionToClips(
   clips: readonly SnapCutClip[],
   compositionPositionMs: number,
 ): TimelinePosition[] {
-  const positionMs = assertIntegerMilliseconds(compositionPositionMs, 'compositionPositionMs');
-  const clipsById = new Map(clips.map((clip) => [clip.id, snapCutClipSchema.parse(clip)]));
-  return buildClipTimeline(clips)
-    .filter(
-      (entry) => positionMs >= entry.compositionStartMs && positionMs < entry.compositionEndMs,
-    )
-    .map((entry) => {
-      const clip = clipsById.get(entry.clipId)!;
-      const positionInClipMs = positionMs - entry.compositionStartMs;
-      return {
-        clipId: entry.clipId,
-        clipIndex: clips.findIndex(({ id }) => id === entry.clipId),
-        positionInClipMs,
-        sourcePositionMs: clip.startMs + positionInClipMs,
-        compositionPositionMs: positionMs,
-      };
-    });
+  const result = mapCompositionPosition(clips, compositionPositionMs);
+  return result === null ? [] : [result];
 }
 
-/** Backwards-compatible single-result mapping; Track 1 wins when tracks overlap. */
-export function mapCompositionPosition(
+// Compatibility helpers for private native adapters while v7 callers migrate.
+export function trackTimelineEndMs(
   clips: readonly SnapCutClip[],
-  compositionPositionMs: number,
-): TimelinePosition | null {
-  return mapTimelinePositionToClips(clips, compositionPositionMs)[0] ?? null;
-}
-
-export function findClipCollisionIds(
-  clips: readonly SnapCutClip[],
-  candidateInput: SnapCutClip,
-  excludeClipId: string | undefined = candidateInput.id,
-): string[] {
-  const candidate = snapCutClipSchema.parse(candidateInput) as SnapCutClip;
-  const candidateEndMs = clipTimelineEndMs(candidate);
-  return clips
-    .filter((clip) => {
-      if (clip.id === excludeClipId || clip.trackId !== candidate.trackId) return false;
-      return (
-        candidate.timelineStartMs < clipTimelineEndMs(clip) && clip.timelineStartMs < candidateEndMs
-      );
-    })
-    .map(({ id }) => id);
-}
-
-export function canPlaceClip(
-  clips: readonly SnapCutClip[],
-  candidate: SnapCutClip,
-  excludeClipId: string | undefined = candidate.id,
-): boolean {
-  return findClipCollisionIds(clips, candidate, excludeClipId).length === 0;
-}
-
-/**
- * Finds the nearest legal start on one track. Candidates are the requested
- * position plus every gap boundary; equal-distance choices prefer the earlier
- * position so drag snapping is deterministic.
- */
-export function snapClipTimelineStartMs(
-  clips: readonly SnapCutClip[],
-  candidateInput: SnapCutClip,
-  requestedTimelineStartMs: number,
-  trackIdInput: TrackId = candidateInput.trackId,
-  excludeClipId: string | undefined = candidateInput.id,
+  _trackId: TrackId,
+  excludeClipId?: string,
 ): number {
-  const requested = assertIntegerMilliseconds(requestedTimelineStartMs, 'requestedTimelineStartMs');
-  const trackId = trackIdSchema.parse(trackIdInput) as TrackId;
-  const candidate = snapCutClipSchema.parse({
-    ...candidateInput,
-    trackId,
-    timelineStartMs: requested,
-  }) as SnapCutClip;
-  if (canPlaceClip(clips, candidate, excludeClipId)) return requested;
+  return compositionDurationMs(clips.filter(({ id }) => id !== excludeClipId));
+}
 
-  const durationMs = clipDurationMs(candidate);
-  const obstacles = clips.filter((clip) => clip.trackId === trackId && clip.id !== excludeClipId);
-  const candidates = new Set<number>([0, requested, trackTimelineEndMs(obstacles, trackId)]);
-  for (const obstacle of obstacles) {
-    candidates.add(clipTimelineEndMs(obstacle));
-    const before = obstacle.timelineStartMs - durationMs;
-    if (before >= 0) candidates.add(before);
-  }
+export function findClipCollisionIds(): string[] {
+  return [];
+}
 
-  const legal = [...candidates]
-    .filter(Number.isSafeInteger)
-    .filter((timelineStartMs) =>
-      canPlaceClip(clips, { ...candidate, timelineStartMs }, excludeClipId),
-    )
-    .sort(
-      (left, right) => Math.abs(left - requested) - Math.abs(right - requested) || left - right,
-    );
-  const snapped = legal[0];
-  if (snapped === undefined) {
-    throw new DomainError('CLIP_COLLISION', 'No legal timeline position is available.');
-  }
-  return snapped;
+export function canPlaceClip(): boolean {
+  return true;
+}
+
+export function snapClipTimelineStartMs(
+  _clips: readonly SnapCutClip[],
+  _candidate: SnapCutClip,
+  requestedTimelineStartMs: number,
+): number {
+  return assertIntegerMilliseconds(requestedTimelineStartMs, 'requestedTimelineStartMs');
 }
 
 export const buildCompositionTimeline = buildClipTimeline;

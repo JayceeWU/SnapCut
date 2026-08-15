@@ -1,25 +1,29 @@
-import { snapCutSourceSchema } from './schemas';
-import type { SnapCutSource } from './types';
+import { immutableSourceManifestSchema, snapCutSourceSchema } from './schemas';
+import type { ImmutableSourceManifest, SnapCutSource } from './types';
 
-export type ImmutableSourceMetadata = Omit<SnapCutSource, 'waveformStatus'>;
+export type ImmutableSourceMetadata = ImmutableSourceManifest;
 
 /**
- * source.json is an immutable import manifest. Waveform processing is a
- * project-level lifecycle concern and is intentionally excluded; every other
- * persisted source field remains part of the strict relation contract.
+ * source.json is an immutable import manifest. User-facing name and waveform
+ * lifecycle belong only to project.json and can change without media repair.
  */
 export function immutableSourceMetadata(sourceInput: SnapCutSource): ImmutableSourceMetadata {
   const source = snapCutSourceSchema.parse(sourceInput) as SnapCutSource;
-  const { waveformStatus: _waveformStatus, ...immutable } = source;
-  return immutable;
+  const {
+    displayName: _displayName,
+    waveformFileName: _waveformFileName,
+    waveformStatus: _waveformStatus,
+    ...immutable
+  } = source;
+  return immutableSourceManifestSchema.parse(immutable) as ImmutableSourceManifest;
 }
 
 export function sourceMetadataMatchesProjectSource(
-  sourceFileSource: SnapCutSource,
+  sourceFileSource: ImmutableSourceManifest,
   projectSource: SnapCutSource,
 ): boolean {
   return (
-    JSON.stringify(immutableSourceMetadata(sourceFileSource)) ===
+    JSON.stringify(immutableSourceManifestSchema.parse(sourceFileSource)) ===
     JSON.stringify(immutableSourceMetadata(projectSource))
   );
 }

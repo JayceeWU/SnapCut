@@ -13,6 +13,7 @@ import {
   disposeImportRuntime,
   exportCoordinator,
   handleMediaAppStateChange,
+  cancelSourceWaveform,
   prepareProjectMediaDeletion,
   previewCoordinator,
   resumePendingWaveforms,
@@ -25,6 +26,14 @@ import {
 
 configureProjectRepository(projectRepository);
 configureEditorServices({ waveformReader: projectRepository });
+projectRepository.configureSourceDeletionLifecycle({
+  async prepare(projectId, sourceId) {
+    await Promise.all([
+      previewCoordinator.releaseProject(projectId),
+      cancelSourceWaveform(projectId, sourceId),
+    ]);
+  },
+});
 configureProjectReleasePort({
   async releaseProject(projectId) {
     await prepareProjectMediaDeletion();
@@ -39,7 +48,7 @@ export default function RootLayout() {
     previewCoordinator.start();
     // One cold-start recovery pass is allowed. A later foreground transition
     // must not restart work that backgrounding cancelled.
-    let mediaTransition = resumePendingWaveforms();
+    let mediaTransition = resumePendingWaveforms().catch(() => undefined);
     const appStateSubscription = AppState.addEventListener('change', (state) => {
       mediaTransition = mediaTransition
         .catch(() => undefined)

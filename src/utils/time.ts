@@ -65,5 +65,22 @@ export function formatExactTime(valueMs: number): string {
   return suffix;
 }
 
+/** Timeline display form: always M:SS.mmm, adding hours only when needed. */
+export function formatTimelineTime(valueMs: number): string {
+  const totalMs = assertIntegerMilliseconds(valueMs);
+  const milliseconds = totalMs % 1_000;
+  const totalSeconds = Math.floor(totalMs / 1_000);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const suffix = `${seconds.toString().padStart(2, '0')}.${milliseconds
+    .toString()
+    .padStart(3, '0')}`;
+  return hours > 0
+    ? `${hours}:${minutes.toString().padStart(2, '0')}:${suffix}`
+    : `${totalMinutes}:${suffix}`;
+}
+
 export const formatTimestampMs = formatExactTime;
 export const parseTimestampMs = parseExactTime;

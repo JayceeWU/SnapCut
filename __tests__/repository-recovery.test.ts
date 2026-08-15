@@ -1,715 +1,498 @@
-import { parseSnapCutProject } from '@/domain/migrations';
-import type { SnapCutProject, SnapCutSource } from '@/domain/types';
+import {
+  addClip,
+  immutableSourceMetadata,
+  removeUnusedSource,
+  snapCutProjectSchema,
+  sourceFileSchema,
+  type SnapCutClip,
+  type SnapCutProject,
+  type SnapCutSource,
+} from '@/domain';
 import { AtomicJsonStore } from '@/repositories/AtomicJsonStore';
 import { ProjectRepository } from '@/repositories/ProjectRepository';
-import type { PrivateMediaVerifier } from '@/repositories/ImportTransaction';
+import { sourceDeletionJournalSchema } from '@/repositories/SourceDeletionTransaction';
+import { StorageGenerationService } from '@/repositories/StorageGenerationService';
 import { StorageLayout } from '@/repositories/StorageLayout';
-import { RecoveryService, STALE_TRANSACTION_AGE_MS } from '@/services/RecoveryService';
+import { RecoveryService } from '@/services/RecoveryService';
+
 import { MemoryStorageFileSystem } from './support/MemoryStorageFileSystem';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const SOURCE_ID = '22222222-2222-4222-8222-222222222222';
 const CLIP_ID = '33333333-3333-4333-8333-333333333333';
-const JOB_ID = 'job-1';
-const NOW = '2026-08-12T23:00:00.000Z';
-const HASH = 'a'.repeat(64);
+const DELETE_JOB_ID = '44444444-4444-4444-8444-444444444444';
+const OTHER_PROJECT_ID = '55555555-5555-4555-8555-555555555555';
+const OTHER_DELETE_JOB_ID = '66666666-6666-4666-8666-666666666666';
+const SHA = 'a'.repeat(64);
+const FILE_SIZE = 4_096;
 
-function verifier(
-  result: { fileSizeBytes: number; sha256: string } = { fileSizeBytes: 500, sha256: HASH },
-): PrivateMediaVerifier {
-  return { verifyPrivateMedia: jest.fn().mockResolvedValue(result) };
-}
-
-function project(name = 'Project'): SnapCutProject {
-  return {
-    schemaVersion: 6,
-    namePromptCompleted: true,
-    id: PROJECT_ID,
-    name,
-    createdAt: NOW,
-    updatedAt: NOW,
-    sources: [],
-    trackCount: 2,
-    clips: [],
-    lastExport: null,
-  };
-}
-
-function source(): SnapCutSource {
+function importedSource(overrides: Partial<SnapCutSource> = {}): SnapCutSource {
   return {
     id: SOURCE_ID,
-    displayName: 'Song.m4a',
-    originalMimeType: 'audio/mp4',
+    displayName: 'Source 1',
+    originalMimeType: null,
     sourceKind: 'm4a',
     privateAudioFileName: 'source.m4a',
-    privateAudioSha256: HASH,
-    durationMs: 1000,
+    durationMs: 12_000,
     codecMime: 'audio/mp4a-latm',
-    sampleRateHz: 44100,
+    sampleRateHz: 48_000,
     channelCount: 2,
-    encodedBitrateBps: 256000,
+    encodedBitrateBps: 256_000,
     pcmBitsPerSample: null,
     aacProfile: 'aac-lc',
     codecConfigFingerprint: 'b'.repeat(64),
     encoderDelayFrames: 0,
     encoderPaddingFrames: 0,
-    fileSizeBytes: 500,
+    privateAudioSha256: SHA,
+    fileSizeBytes: FILE_SIZE,
     waveformFileName: 'waveform.json',
     waveformStatus: 'pending',
-    createdAt: NOW,
+    createdAt: '2026-08-14T12:00:01.000Z',
+    ...overrides,
   };
 }
 
-function setup() {
+function clock(): () => string {
+  let tick = 0;
+  return () => `2026-08-14T12:00:${String(tick++).padStart(2, '0')}.000Z`;
+}
+
+async function setupImportedProject() {
   const fileSystem = new MemoryStorageFileSystem();
   const layout = new StorageLayout(fileSystem);
-  layout.ensureBaseDirectories();
-  return { fileSystem, layout };
-}
-
-async function seedProject(
-  layout: StorageLayout,
-  value: SnapCutProject,
-  suffix = '',
-): Promise<void> {
-  layout.fileSystem.ensureDirectory(layout.projectDirectoryUri(value.id));
-  layout.fileSystem.ensureDirectory(layout.projectSourcesDirectoryUri(value.id));
-  layout.fileSystem.writeText(
-    `${layout.projectMetadataUri(value.id)}${suffix}`,
-    JSON.stringify(value),
-  );
-}
-
-function seedImportJournal(
-  fileSystem: MemoryStorageFileSystem,
-  layout: StorageLayout,
-  projectUpdatedAt = NOW,
-): void {
-  fileSystem.writeText(
-    layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID),
-    JSON.stringify({
-      schemaVersion: 1,
-      jobId: JOB_ID,
-      projectId: PROJECT_ID,
-      sourceId: SOURCE_ID,
-      privateAudioFileName: 'source.m4a',
-      expectedFileSizeBytes: 500,
-      expectedSha256: HASH,
-      projectUpdatedAt,
-      nativeInspectionComplete: true,
-    }),
-  );
-}
-
-function seedFinalSource(fileSystem: MemoryStorageFileSystem, layout: StorageLayout): void {
-  fileSystem.ensureDirectory(layout.sourceDirectoryUri(PROJECT_ID, SOURCE_ID));
-  fileSystem.writeMedia(layout.sourceAudioUri(PROJECT_ID, SOURCE_ID, 'source.m4a'), 500);
-  fileSystem.writeText(
-    layout.sourceMetadataUri(PROJECT_ID, SOURCE_ID),
-    JSON.stringify({ schemaVersion: 1, projectId: PROJECT_ID, source: source() }),
-  );
-}
-
-async function setupStagedImport(privateMediaVerifier?: PrivateMediaVerifier) {
-  const { fileSystem, layout } = setup();
+  const verifier = {
+    verifyPrivateMedia: jest.fn(async (uri: string) => ({
+      fileSizeBytes: fileSystem.fileSize(uri),
+      sha256: SHA,
+    })),
+  };
   const repository = new ProjectRepository({
     layout,
-    now: () => NOW,
-    idFactory: () => PROJECT_ID,
-    ...(privateMediaVerifier === undefined ? {} : { privateMediaVerifier }),
+    privateMediaVerifier: verifier,
+    now: clock(),
+    idFactory: () => DELETE_JOB_ID,
   });
   await repository.initialize();
-  await repository.create({ name: 'Import' });
+  await repository.create({ id: PROJECT_ID, name: 'Project' });
   const paths = repository.beginImport({
-    jobId: JOB_ID,
+    jobId: 'import-job',
     projectId: PROJECT_ID,
     sourceId: SOURCE_ID,
     privateAudioFileName: 'source.m4a',
   });
-  fileSystem.writeMedia(paths.outputFileUri, 500);
-  return { fileSystem, layout, repository, paths };
+  fileSystem.writeMedia(paths.outputFileUri, FILE_SIZE);
+  const project = await repository.finalizeImport({
+    jobId: 'import-job',
+    projectId: PROJECT_ID,
+    source: importedSource(),
+    privateAudioSha256: SHA,
+  });
+  return { fileSystem, layout, verifier, repository, project };
 }
 
-describe('atomic JSON storage and startup recovery', () => {
-  it('rebuilds a missing index once and leaves an unchanged cache untouched later', async () => {
-    const { layout } = setup();
-    await seedProject(layout, project('Indexed'));
-    const recovery = new RecoveryService(layout, { privateMediaVerifier: verifier() });
-
-    const first = await recovery.recover();
-    const second = await recovery.recover();
-
-    expect(first.diagnostics).toContainEqual({ code: 'INDEX_REBUILT', projectCount: 1 });
-    expect(second.diagnostics).not.toContainEqual(
-      expect.objectContaining({ code: 'INDEX_REBUILT' }),
-    );
-  });
-
-  it('atomically persists a recovered schema v2 project as v6 without prompting', async () => {
-    const { fileSystem, layout } = setup();
-    const current = project('Legacy v2');
-    const { namePromptCompleted: _completed, trackCount: _trackCount, ...withoutPrompt } = current;
-    fileSystem.ensureDirectory(layout.projectDirectoryUri(PROJECT_ID));
-    fileSystem.ensureDirectory(layout.projectSourcesDirectoryUri(PROJECT_ID));
-    fileSystem.writeText(
-      layout.projectMetadataUri(PROJECT_ID),
-      JSON.stringify({ ...withoutPrompt, schemaVersion: 2 }),
-    );
-
-    const report = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier(),
-    }).recover();
-    const persisted = JSON.parse(
-      await fileSystem.readText(layout.projectMetadataUri(PROJECT_ID)),
-    ) as Record<string, unknown>;
-
-    expect(report.projects[0]?.project).toMatchObject({
-      schemaVersion: 6,
-      trackCount: 2,
-      name: 'Legacy v2',
-      namePromptCompleted: true,
+function seedPendingSourceDeletion(
+  fileSystem: MemoryStorageFileSystem,
+  layout: StorageLayout,
+  projectId: string,
+  options: {
+    fileJobId?: string;
+    journal?: unknown;
+  } = {},
+): { journalUri: string; deletionDirectoryUri: string } {
+  const fileJobId = options.fileJobId ?? DELETE_JOB_ID;
+  const deletionDirectoryUri = layout.sourceDeleteDirectoryUri(DELETE_JOB_ID);
+  fileSystem.ensureDirectory(deletionDirectoryUri);
+  fileSystem.writeMedia(fileSystem.join(deletionDirectoryUri, 'source.m4a'), 512);
+  const journalUri = layout.projectSourceDeleteJournalUri(projectId, fileJobId);
+  const journal =
+    options.journal ??
+    sourceDeletionJournalSchema.parse({
+      schemaVersion: 1,
+      jobId: DELETE_JOB_ID,
+      projectId,
+      sourceId: SOURCE_ID,
+      projectUpdatedAt: '2026-08-14T12:00:59.000Z',
     });
-    expect(persisted).toMatchObject({
-      schemaVersion: 6,
-      trackCount: 2,
-      namePromptCompleted: true,
-    });
-    expect(fileSystem.fileExists(`${layout.projectMetadataUri(PROJECT_ID)}.tmp`)).toBe(false);
-    expect(fileSystem.fileExists(`${layout.projectMetadataUri(PROJECT_ID)}.bak`)).toBe(false);
-  });
+  fileSystem.writeText(journalUri, JSON.stringify(journal));
+  return { journalUri, deletionDirectoryUri };
+}
 
-  it('writes temp, verifies it, backs up final, and commits in the same directory', async () => {
-    const { fileSystem, layout } = setup();
-    const json = new AtomicJsonStore(fileSystem);
-    await seedProject(layout, project('Old'));
+async function setupCorruptProject(options: { journal?: unknown } = {}) {
+  const fileSystem = new MemoryStorageFileSystem();
+  const layout = new StorageLayout(fileSystem);
+  layout.ensureBaseDirectories();
+  fileSystem.writeText(
+    layout.storageGenerationUri,
+    JSON.stringify({ schemaVersion: 1, generation: 7 }),
+  );
+  fileSystem.ensureDirectory(layout.projectDirectoryUri(PROJECT_ID));
+  fileSystem.writeText(layout.projectMetadataUri(PROJECT_ID), '{broken');
+  const pending = seedPendingSourceDeletion(fileSystem, layout, PROJECT_ID, options);
+  const repository = new ProjectRepository({ layout, now: clock() });
+  await repository.initialize();
+  expect(repository.listCorruptProjectIds()).toContain(PROJECT_ID);
+  return { fileSystem, layout, repository, ...pending };
+}
 
-    await json.write(layout.projectMetadataUri(PROJECT_ID), project('New'), parseSnapCutProject);
-
-    expect(JSON.parse(await fileSystem.readText(layout.projectMetadataUri(PROJECT_ID))).name).toBe(
-      'New',
+describe('v7 storage generation reset', () => {
+  it('removes only old private editing state and writes the marker last', async () => {
+    const fileSystem = new MemoryStorageFileSystem();
+    const layout = new StorageLayout(fileSystem);
+    layout.ensureBaseDirectories();
+    const diagnosticsUri = fileSystem.join(layout.rootUri, 'diagnostics.json');
+    const legacyCorruptIndexUri = fileSystem.join(
+      layout.rootUri,
+      'index.json.corrupt-1723590000000',
     );
-    expect(fileSystem.fileExists(`${layout.projectMetadataUri(PROJECT_ID)}.tmp`)).toBe(false);
-    expect(fileSystem.fileExists(`${layout.projectMetadataUri(PROJECT_ID)}.bak`)).toBe(false);
-    expect(fileSystem.moves).toEqual(
-      expect.arrayContaining([
-        {
-          source: layout.projectMetadataUri(PROJECT_ID),
-          destination: `${layout.projectMetadataUri(PROJECT_ID)}.bak`,
-        },
-        {
-          source: `${layout.projectMetadataUri(PROJECT_ID)}.tmp`,
-          destination: layout.projectMetadataUri(PROJECT_ID),
-        },
-      ]),
+    const nonMatchingCorruptUri = fileSystem.join(
+      layout.rootUri,
+      'index.json.corrupt-not-a-timestamp',
     );
-  });
-
-  it('prefers a valid final over backup and temporary metadata', async () => {
-    const { fileSystem, layout } = setup();
-    await seedProject(layout, project('Final'));
-    await seedProject(layout, project('Backup'), '.bak');
-    await seedProject(layout, project('Temporary'), '.tmp');
-
-    const report = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier(),
-    }).recover();
-
-    expect(report.projects[0]?.project.name).toBe('Final');
-    expect(JSON.parse(await fileSystem.readText(layout.projectMetadataUri(PROJECT_ID))).name).toBe(
-      'Final',
-    );
-  });
-
-  it('restores a valid backup when final is corrupt', async () => {
-    const { fileSystem, layout } = setup();
-    await seedProject(layout, project('Backup'), '.bak');
-    fileSystem.writeText(layout.projectMetadataUri(PROJECT_ID), '{broken');
-
-    const report = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier(),
-    }).recover();
-
-    expect(report.projects[0]?.project.name).toBe('Backup');
-    expect(report.diagnostics).toEqual(
-      expect.arrayContaining([
-        { code: 'JSON_BACKUP_RESTORED', uri: layout.projectMetadataUri(PROJECT_ID) },
-      ]),
-    );
-  });
-
-  it('does not promote a temporary project without a proving journal', async () => {
-    const { fileSystem, layout } = setup();
-    await seedProject(layout, project('Temporary'), '.tmp');
-
-    const report = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier(),
-    }).recover();
-
-    expect(report.projects).toHaveLength(0);
-    expect(report.corruptProjectIds).toContain(PROJECT_ID);
-    expect(fileSystem.fileExists(`${layout.projectMetadataUri(PROJECT_ID)}.tmp`)).toBe(true);
-  });
-
-  it('promotes a temporary project only when journal, private media and staging state agree', async () => {
-    const { fileSystem, layout } = setup();
-    const imported = { ...project(), sources: [source()] };
-    await seedProject(layout, imported, '.tmp');
-    seedFinalSource(fileSystem, layout);
-    seedImportJournal(fileSystem, layout);
-
-    const report = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier(),
-    }).recover();
-
-    expect(report.projects[0]?.project.sources).toHaveLength(1);
-    expect(fileSystem.fileExists(layout.projectMetadataUri(PROJECT_ID))).toBe(true);
-    expect(report.projects[0]?.repairStatus).toEqual({ state: 'ready', issues: [] });
-    expect(fileSystem.fileExists(layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID))).toBe(
-      false,
-    );
-  });
-
-  it('promotes and completes a journal when only project waveform status advanced', async () => {
-    const { fileSystem, layout } = setup();
-    await seedProject(
-      layout,
-      {
-        ...project(),
-        sources: [{ ...source(), waveformStatus: 'processing' }],
-      },
-      '.tmp',
-    );
-    seedFinalSource(fileSystem, layout);
-    seedImportJournal(fileSystem, layout);
-
-    const report = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier(),
-    }).recover();
-
-    expect(report.projects[0]?.project.sources[0]?.waveformStatus).toBe('processing');
-    expect(report.projects[0]?.repairStatus).toEqual({ state: 'ready', issues: [] });
-    expect(fileSystem.fileExists(layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID))).toBe(
-      false,
-    );
-  });
-
-  it('treats project waveform status as dynamic while keeping source metadata strict', async () => {
-    const { fileSystem, layout } = setup();
-    const processingSource = { ...source(), waveformStatus: 'processing' as const };
-    await seedProject(layout, { ...project(), sources: [processingSource] });
-    seedFinalSource(fileSystem, layout);
-
-    const recovered = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier(),
-    }).recover();
-    expect(recovered.projects[0]?.repairStatus).toEqual({ state: 'ready', issues: [] });
-
-    await seedProject(layout, {
-      ...project(),
-      sources: [{ ...processingSource, sampleRateHz: 48_000 }],
-    });
-    const mismatched = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier(),
-    }).recover();
-    expect(mismatched.projects[0]?.repairStatus.issues).toContain('SOURCE_RELATION_MISMATCH');
-  });
-
-  it('does not promote temporary metadata when native hash verification is unavailable', async () => {
-    const { fileSystem, layout } = setup();
-    await seedProject(layout, { ...project(), sources: [source()] }, '.tmp');
-    seedFinalSource(fileSystem, layout);
-    seedImportJournal(fileSystem, layout);
-
-    const report = await new RecoveryService(layout).recover();
-
-    expect(report.projects).toHaveLength(0);
-    expect(report.corruptProjectIds).toContain(PROJECT_ID);
-    expect(fileSystem.fileExists(`${layout.projectMetadataUri(PROJECT_ID)}.tmp`)).toBe(true);
-  });
-
-  it('does not promote temporary metadata when the actual private-media hash differs', async () => {
-    const { fileSystem, layout } = setup();
-    await seedProject(layout, { ...project(), sources: [source()] }, '.tmp');
-    seedFinalSource(fileSystem, layout);
-    seedImportJournal(fileSystem, layout);
-
-    const report = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier({ fileSizeBytes: 500, sha256: 'c'.repeat(64) }),
-    }).recover();
-
-    expect(report.projects).toHaveLength(0);
-    expect(report.corruptProjectIds).toContain(PROJECT_ID);
-  });
-
-  it('rolls back an uncommitted journal and orphan source without poisoning the valid project', async () => {
-    const { fileSystem, layout } = setup();
-    await seedProject(layout, project());
-    seedFinalSource(fileSystem, layout);
-    seedImportJournal(fileSystem, layout, '2026-08-12T23:01:00.000Z');
-
-    const report = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier(),
-    }).recover();
-
-    expect(report.projects[0]?.project.sources).toEqual([]);
-    expect(report.projects[0]?.repairStatus).toEqual({ state: 'ready', issues: [] });
-    expect(fileSystem.directoryExists(layout.sourceDirectoryUri(PROJECT_ID, SOURCE_ID))).toBe(
-      false,
-    );
-    expect(fileSystem.fileExists(layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID))).toBe(
-      false,
-    );
-  });
-
-  it('never follows a mismatched journal into another project directory', async () => {
-    const { fileSystem, layout } = setup();
-    const otherProjectId = '33333333-3333-4333-8333-333333333333';
-    await seedProject(layout, project());
-    fileSystem.ensureDirectory(layout.sourceDirectoryUri(otherProjectId, SOURCE_ID));
-    fileSystem.writeMedia(layout.sourceAudioUri(otherProjectId, SOURCE_ID, 'source.m4a'), 500);
-    fileSystem.writeText(
-      layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID),
-      JSON.stringify({
-        schemaVersion: 1,
-        jobId: JOB_ID,
-        projectId: otherProjectId,
-        sourceId: SOURCE_ID,
-        privateAudioFileName: 'source.m4a',
-        expectedFileSizeBytes: 500,
-        expectedSha256: HASH,
-        projectUpdatedAt: NOW,
-        nativeInspectionComplete: true,
-      }),
+    const unrelatedUri = fileSystem.join(layout.rootUri, 'keep-me.json');
+    fileSystem.writeText(diagnosticsUri, '{"keep":true}');
+    fileSystem.writeText(legacyCorruptIndexUri, '{"legacy":true}');
+    fileSystem.writeText(nonMatchingCorruptUri, '{"keep":true}');
+    fileSystem.writeText(unrelatedUri, '{"keep":true}');
+    fileSystem.writeText(layout.indexUri, '{"legacy":true}');
+    fileSystem.writeText(fileSystem.join(layout.projectsDirectoryUri, 'old', 'project.json'), '{}');
+    fileSystem.writeMedia(
+      fileSystem.join(layout.stagingDirectoryUri, '.import-old', 'partial'),
+      20,
     );
 
-    const report = await new RecoveryService(layout, {
-      privateMediaVerifier: verifier(),
-    }).recover();
-
-    expect(report.projects[0]?.repairStatus.issues).toContain('INCOMPLETE_IMPORT_TRANSACTION');
-    expect(fileSystem.directoryExists(layout.sourceDirectoryUri(otherProjectId, SOURCE_ID))).toBe(
+    await expect(new StorageGenerationService(layout).ensureCurrentGeneration()).resolves.toBe(
       true,
     );
+    expect(fileSystem.fileExists(diagnosticsUri)).toBe(true);
+    expect(fileSystem.fileExists(legacyCorruptIndexUri)).toBe(false);
+    expect(fileSystem.fileExists(nonMatchingCorruptUri)).toBe(true);
+    expect(fileSystem.fileExists(unrelatedUri)).toBe(true);
+    expect(fileSystem.listDirectory(layout.projectsDirectoryUri)).toEqual([]);
+    expect(fileSystem.listDirectory(layout.stagingDirectoryUri)).toEqual([]);
+    expect(fileSystem.fileExists(layout.indexUri)).toBe(false);
+    await expect(fileSystem.readText(layout.storageGenerationUri)).resolves.toContain(
+      '"generation":7',
+    );
+    await expect(new StorageGenerationService(layout).ensureCurrentGeneration()).resolves.toBe(
+      false,
+    );
   });
 
-  it('rebuilds a corrupt index from authoritative project directories and preserves repairs', async () => {
-    const { fileSystem, layout } = setup();
-    await seedProject(layout, { ...project(), sources: [source()] });
-    fileSystem.writeText(layout.indexUri, '{broken');
-
-    const report = await new RecoveryService(layout).recover();
-
-    const rebuilt = JSON.parse(await fileSystem.readText(layout.indexUri));
-    expect(rebuilt.projects).toHaveLength(1);
-    expect(rebuilt.projects[0].id).toBe(PROJECT_ID);
-    expect(report.projects[0]?.repairStatus.issues).toContain('SOURCE_DIRECTORY_MISSING');
-    expect(fileSystem.directoryExists(layout.projectDirectoryUri(PROJECT_ID))).toBe(true);
-  });
-
-  it('removes only stale inactive staging transactions after 24 hours', async () => {
-    const { fileSystem, layout } = setup();
-    const activeUri = layout.transactionDirectoryUri('active');
-    const staleUri = layout.transactionDirectoryUri('stale');
-    fileSystem.ensureDirectory(activeUri);
-    fileSystem.ensureDirectory(staleUri);
-    fileSystem.now = STALE_TRANSACTION_AGE_MS + 100_000;
-    fileSystem.setLastModified(activeUri, 1);
-    fileSystem.setLastModified(staleUri, 1);
-
-    const report = await new RecoveryService(layout, {
-      now: () => fileSystem.now,
-      activeJobIds: () => new Set(['active']),
-    }).recover();
-
-    expect(fileSystem.directoryExists(activeUri)).toBe(true);
-    expect(fileSystem.directoryExists(staleUri)).toBe(false);
-    expect(report.removedTransactionIds).toEqual(['stale']);
+  it('does not write a marker until every cleanup target succeeds and retries safely', async () => {
+    const fileSystem = new MemoryStorageFileSystem();
+    const layout = new StorageLayout(fileSystem);
+    layout.ensureBaseDirectories();
+    fileSystem.writeMedia(
+      fileSystem.join(layout.stagingDirectoryUri, '.import-old', 'partial'),
+      20,
+    );
+    const originalDelete = fileSystem.deleteDirectory.bind(fileSystem);
+    const deletion = jest.spyOn(fileSystem, 'deleteDirectory').mockImplementation((uri) => {
+      if (uri === layout.stagingDirectoryUri) throw new Error('interrupted');
+      originalDelete(uri);
+    });
+    await expect(new StorageGenerationService(layout).ensureCurrentGeneration()).rejects.toThrow(
+      'interrupted',
+    );
+    expect(fileSystem.fileExists(layout.storageGenerationUri)).toBe(false);
+    deletion.mockRestore();
+    await expect(new StorageGenerationService(layout).ensureCurrentGeneration()).resolves.toBe(
+      true,
+    );
   });
 });
 
-describe('ProjectRepository', () => {
-  it('keeps corrupt project directories discoverable until explicit deletion', async () => {
-    const { fileSystem, layout } = setup();
-    fileSystem.ensureDirectory(layout.projectDirectoryUri(PROJECT_ID));
-    fileSystem.writeText(layout.projectMetadataUri(PROJECT_ID), '{broken');
-    const repository = new ProjectRepository({ layout, now: () => NOW });
+describe('v7 import and source lifecycle repository', () => {
+  it('commits import as Source only and writes an immutable v2 manifest', async () => {
+    const { fileSystem, layout, project } = await setupImportedProject();
+    expect(project.sources).toHaveLength(1);
+    expect(project.clips).toEqual([]);
+    const manifest = sourceFileSchema.parse(
+      JSON.parse(await fileSystem.readText(layout.sourceMetadataUri(PROJECT_ID, SOURCE_ID))),
+    );
+    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.source).toEqual(immutableSourceMetadata(project.sources[0]!));
+    expect(manifest.source).not.toHaveProperty('displayName');
+    expect(manifest.source).not.toHaveProperty('waveformStatus');
+  });
 
-    await repository.initialize();
+  it('renames duplicate-friendly source metadata without creating a repair mismatch', async () => {
+    const { repository } = await setupImportedProject();
+    const renamed = await repository.renameSource(PROJECT_ID, SOURCE_ID, '  Voice 🎵  ');
+    expect(renamed.sources[0]?.displayName).toBe('Voice 🎵');
+    expect(repository.getRepairStatus(PROJECT_ID)).toEqual({ state: 'ready', issues: [] });
+  });
 
-    expect(repository.list()).toEqual([]);
-    expect(repository.listCorruptProjectIds()).toEqual([PROJECT_ID]);
-    expect(fileSystem.directoryExists(layout.projectDirectoryUri(PROJECT_ID))).toBe(true);
+  it('rejects deleting a referenced source with stable SOURCE_IN_USE', async () => {
+    const { repository, project } = await setupImportedProject();
+    const clip: SnapCutClip = {
+      id: CLIP_ID,
+      sourceId: SOURCE_ID,
+      startMs: 0,
+      endMs: 1_000,
+    };
+    await repository.save(addClip(project, clip, project.updatedAt));
+    await expect(repository.deleteSource(PROJECT_ID, SOURCE_ID)).rejects.toMatchObject({
+      code: 'SOURCE_IN_USE',
+    });
+  });
 
-    await repository.deleteCorruptProject(PROJECT_ID);
+  it('prepares media outside the write queue and deletes an unused private source', async () => {
+    const { fileSystem, layout, repository } = await setupImportedProject();
+    const prepare = jest.fn(async (projectId: string, sourceId: string) => {
+      // Simulates waveform cancellation persisting its terminal status through
+      // the same keyed repository queue; this would deadlock if prepare ran in it.
+      await repository.updateSourceWaveformStatus(projectId, sourceId, 'pending');
+    });
+    repository.configureSourceDeletionLifecycle({ prepare });
+    const deleted = await repository.deleteSource(PROJECT_ID, SOURCE_ID);
+    expect(prepare).toHaveBeenCalledWith(PROJECT_ID, SOURCE_ID);
+    expect(deleted.sources).toEqual([]);
+    expect(fileSystem.directoryExists(layout.sourceDirectoryUri(PROJECT_ID, SOURCE_ID))).toBe(
+      false,
+    );
+  });
 
-    expect(repository.listCorruptProjectIds()).toEqual([]);
+  it('accepts a project commit that throws afterward and completes source deletion', async () => {
+    const { fileSystem, layout, repository } = await setupImportedProject();
+    fileSystem.throwOnDeleteFileUri = `${layout.projectMetadataUri(PROJECT_ID)}.bak`;
+    await expect(repository.deleteSource(PROJECT_ID, SOURCE_ID)).resolves.toMatchObject({
+      sources: [],
+    });
+    expect(repository.get(PROJECT_ID)?.sources).toEqual([]);
+    expect(fileSystem.directoryExists(layout.sourceDirectoryUri(PROJECT_ID, SOURCE_ID))).toBe(
+      false,
+    );
+  });
+
+  it('reports ready after a one-shot staging delete failure succeeds on inspection retry', async () => {
+    const { fileSystem, layout, repository } = await setupImportedProject();
+    const deletionDirectoryUri = layout.sourceDeleteDirectoryUri(DELETE_JOB_ID);
+    const journalUri = layout.projectSourceDeleteJournalUri(PROJECT_ID, DELETE_JOB_ID);
+    const originalDelete = fileSystem.deleteDirectory.bind(fileSystem);
+    let deletionAttempts = 0;
+    const deletion = jest.spyOn(fileSystem, 'deleteDirectory').mockImplementation((uri) => {
+      if (uri === deletionDirectoryUri && deletionAttempts++ === 0) {
+        throw new Error('provider rate limited');
+      }
+      originalDelete(uri);
+    });
+
+    await repository.deleteSource(PROJECT_ID, SOURCE_ID);
+
+    expect(deletionAttempts).toBe(2);
+    expect(fileSystem.directoryExists(deletionDirectoryUri)).toBe(false);
+    expect(fileSystem.fileExists(journalUri)).toBe(false);
+    expect(repository.getRepairStatus(PROJECT_ID)).toEqual({ state: 'ready', issues: [] });
+    deletion.mockRestore();
+  });
+
+  it('keeps an accurate repair status when every staging cleanup attempt fails', async () => {
+    const { fileSystem, layout, repository } = await setupImportedProject();
+    const deletionDirectoryUri = layout.sourceDeleteDirectoryUri(DELETE_JOB_ID);
+    const journalUri = layout.projectSourceDeleteJournalUri(PROJECT_ID, DELETE_JOB_ID);
+    const originalDelete = fileSystem.deleteDirectory.bind(fileSystem);
+    const deletion = jest.spyOn(fileSystem, 'deleteDirectory').mockImplementation((uri) => {
+      if (uri === deletionDirectoryUri) throw new Error('persistent provider failure');
+      originalDelete(uri);
+    });
+
+    await repository.deleteSource(PROJECT_ID, SOURCE_ID);
+
+    expect(fileSystem.directoryExists(deletionDirectoryUri)).toBe(true);
+    expect(fileSystem.fileExists(journalUri)).toBe(true);
+    expect(repository.getRepairStatus(PROJECT_ID)).toEqual({
+      state: 'needs-repair',
+      issues: ['INCOMPLETE_SOURCE_DELETE_TRANSACTION'],
+    });
+    deletion.mockRestore();
+  });
+});
+
+describe('project deletion source-trash containment', () => {
+  it('cleans pending source-delete staging before deleting a healthy project', async () => {
+    const { fileSystem, layout, repository } = await setupImportedProject();
+    const { deletionDirectoryUri } = seedPendingSourceDeletion(fileSystem, layout, PROJECT_ID);
+
+    await repository.delete(PROJECT_ID);
+
+    expect(fileSystem.directoryExists(deletionDirectoryUri)).toBe(false);
     expect(fileSystem.directoryExists(layout.projectDirectoryUri(PROJECT_ID))).toBe(false);
   });
 
-  it('uses per-project queues while allowing different projects to proceed independently', async () => {
-    const { layout } = setup();
-    const ids = [PROJECT_ID, '33333333-3333-4333-8333-333333333333'];
-    const repository = new ProjectRepository({
-      layout,
-      now: () => NOW,
-      idFactory: () => ids.shift() ?? PROJECT_ID,
-    });
-    await repository.initialize();
+  it('cleans pending source-delete staging before deleting a corrupt project', async () => {
+    const { fileSystem, layout, repository, deletionDirectoryUri } = await setupCorruptProject();
 
-    const [first, second] = await Promise.all([
-      repository.create({ name: 'First' }),
-      repository.create({ name: 'Second' }),
-    ]);
-    const [renamedFirst, renamedSecond] = await Promise.all([
-      repository.rename(first.id, 'First updated'),
-      repository.rename(second.id, 'Second updated'),
-    ]);
+    await repository.deleteCorruptProject(PROJECT_ID);
 
-    expect(renamedFirst.name).toBe('First updated');
-    expect(renamedSecond.name).toBe('Second updated');
-    expect(repository.list()).toHaveLength(2);
+    expect(fileSystem.directoryExists(deletionDirectoryUri)).toBe(false);
+    expect(fileSystem.directoryExists(layout.projectDirectoryUri(PROJECT_ID))).toBe(false);
   });
 
-  it('serializes consecutive writes to the same project', async () => {
-    const { layout } = setup();
-    const repository = new ProjectRepository({
+  it('fails closed when staging cleanup fails and keeps the project journal', async () => {
+    const { fileSystem, layout, repository } = await setupImportedProject();
+    const { journalUri, deletionDirectoryUri } = seedPendingSourceDeletion(
+      fileSystem,
       layout,
-      now: () => NOW,
-      idFactory: () => PROJECT_ID,
-      privateMediaVerifier: verifier(),
+      PROJECT_ID,
+    );
+    const originalDelete = fileSystem.deleteDirectory.bind(fileSystem);
+    const deletion = jest.spyOn(fileSystem, 'deleteDirectory').mockImplementation((uri) => {
+      if (uri === deletionDirectoryUri) throw new Error('cleanup failed');
+      originalDelete(uri);
     });
-    await repository.initialize();
-    await repository.create({ name: 'Initial' });
 
-    const first = repository.rename(PROJECT_ID, 'First write');
-    const second = repository.rename(PROJECT_ID, 'Second write');
-    await Promise.all([first, second]);
+    await expect(repository.delete(PROJECT_ID)).rejects.toMatchObject({
+      code: 'PROJECT_DELETE_FAILED',
+    });
 
-    expect(repository.get(PROJECT_ID)?.name).toBe('Second write');
+    expect(fileSystem.directoryExists(layout.projectDirectoryUri(PROJECT_ID))).toBe(true);
+    expect(fileSystem.directoryExists(deletionDirectoryUri)).toBe(true);
+    expect(fileSystem.fileExists(journalUri)).toBe(true);
+    deletion.mockRestore();
   });
 
-  it('materializes a native staging target and commits only a private relative source', async () => {
-    const { fileSystem, layout } = setup();
-    const repository = new ProjectRepository({
-      layout,
-      now: () => NOW,
-      idFactory: () => PROJECT_ID,
-      privateMediaVerifier: verifier(),
-    });
-    await repository.initialize();
-    await repository.create({ name: 'Import' });
-    const paths = repository.beginImport({
-      jobId: JOB_ID,
-      projectId: PROJECT_ID,
+  it('does not follow a valid journal that names another project', async () => {
+    const crossProjectJournal = sourceDeletionJournalSchema.parse({
+      schemaVersion: 1,
+      jobId: DELETE_JOB_ID,
+      projectId: OTHER_PROJECT_ID,
       sourceId: SOURCE_ID,
-      privateAudioFileName: 'source.m4a',
+      projectUpdatedAt: '2026-08-14T12:00:59.000Z',
     });
-    expect(paths.outputFileUri.endsWith('source.m4a.partial')).toBe(true);
-    expect(paths.privateAudioRelativePath).toBe(`sources/${SOURCE_ID}/source.m4a`);
-    expect(JSON.stringify(paths)).not.toContain('content://');
-    fileSystem.writeMedia(paths.outputFileUri, 500);
-
-    const committed = await repository.finalizeImport({
-      jobId: JOB_ID,
-      projectId: PROJECT_ID,
-      clipId: CLIP_ID,
-      targetTrackId: 'track-1',
-      source: source(),
-      privateAudioSha256: HASH,
+    const { fileSystem, layout, repository, deletionDirectoryUri } = await setupCorruptProject({
+      journal: crossProjectJournal,
     });
 
-    expect(committed.sources).toHaveLength(1);
-    expect(committed.clips).toEqual([
-      expect.objectContaining({
-        id: CLIP_ID,
+    await expect(repository.deleteCorruptProject(PROJECT_ID)).rejects.toMatchObject({
+      code: 'PROJECT_DELETE_FAILED',
+    });
+    expect(fileSystem.directoryExists(layout.projectDirectoryUri(PROJECT_ID))).toBe(true);
+    expect(fileSystem.directoryExists(deletionDirectoryUri)).toBe(true);
+  });
+
+  it('does not derive a path from an invalid journal job ID', async () => {
+    const { fileSystem, layout, repository, deletionDirectoryUri } = await setupCorruptProject({
+      journal: {
+        schemaVersion: 1,
+        jobId: '../outside',
+        projectId: PROJECT_ID,
         sourceId: SOURCE_ID,
-        startMs: 0,
-        endMs: 1_000,
-        trackId: 'track-1',
-        timelineStartMs: 0,
-        gain: 1,
-        fadeInMs: 0,
-        fadeOutMs: 0,
-      }),
-    ]);
-    expect(JSON.stringify(committed)).not.toContain('content://');
-    expect(fileSystem.fileExists(layout.sourceAudioUri(PROJECT_ID, SOURCE_ID, 'source.m4a'))).toBe(
-      true,
-    );
-    expect(fileSystem.directoryExists(layout.transactionDirectoryUri(JOB_ID))).toBe(false);
-  });
-
-  it('commits when directory move completes but the provider reports an error', async () => {
-    const { fileSystem, layout } = setup();
-    const repository = new ProjectRepository({
-      layout,
-      now: () => NOW,
-      idFactory: () => PROJECT_ID,
-      privateMediaVerifier: verifier(),
+        projectUpdatedAt: '2026-08-14T12:00:59.000Z',
+      },
     });
-    await repository.initialize();
-    await repository.create({ name: 'Import' });
-    const paths = repository.beginImport({
-      jobId: JOB_ID,
+    const unrelatedUri = fileSystem.join(layout.stagingDirectoryUri, 'unrelated');
+    fileSystem.ensureDirectory(unrelatedUri);
+
+    await expect(repository.deleteCorruptProject(PROJECT_ID)).rejects.toMatchObject({
+      code: 'PROJECT_DELETE_FAILED',
+    });
+    expect(fileSystem.directoryExists(layout.projectDirectoryUri(PROJECT_ID))).toBe(true);
+    expect(fileSystem.directoryExists(deletionDirectoryUri)).toBe(true);
+    expect(fileSystem.directoryExists(unrelatedUri)).toBe(true);
+  });
+});
+
+describe('source deletion crash recovery', () => {
+  async function seedDeletionTransaction(projectCommitted: boolean) {
+    const setup = await setupImportedProject();
+    const { fileSystem, layout, project } = setup;
+    const json = new AtomicJsonStore(fileSystem);
+    const updated = removeUnusedSource(project, SOURCE_ID, '2026-08-14T12:00:59.000Z');
+    const journal = sourceDeletionJournalSchema.parse({
+      schemaVersion: 1,
+      jobId: DELETE_JOB_ID,
       projectId: PROJECT_ID,
       sourceId: SOURCE_ID,
-      privateAudioFileName: 'source.m4a',
+      projectUpdatedAt: updated.updatedAt,
     });
-    fileSystem.writeMedia(paths.outputFileUri, 500);
-    fileSystem.throwAfterDirectoryMove = true;
-
-    const committed = await repository.finalizeImport({
-      jobId: JOB_ID,
-      projectId: PROJECT_ID,
-      clipId: CLIP_ID,
-      targetTrackId: 'track-1',
-      source: source(),
-      privateAudioSha256: HASH,
-    });
-
-    expect(committed.sources.map(({ id }) => id)).toEqual([SOURCE_ID]);
-    expect(fileSystem.fileExists(layout.sourceAudioUri(PROJECT_ID, SOURCE_ID, 'source.m4a'))).toBe(
-      true,
+    await json.write(
+      layout.projectSourceDeleteJournalUri(PROJECT_ID, DELETE_JOB_ID),
+      journal,
+      (raw) => sourceDeletionJournalSchema.parse(raw),
     );
-  });
-
-  it('fails closed and rolls back when native final-media verification is unavailable', async () => {
-    const { fileSystem, layout, repository } = await setupStagedImport();
-
-    await expect(
-      repository.finalizeImport({
-        jobId: JOB_ID,
-        projectId: PROJECT_ID,
-        clipId: CLIP_ID,
-        targetTrackId: 'track-1',
-        source: source(),
-        privateAudioSha256: HASH,
-      }),
-    ).rejects.toMatchObject({ code: 'IMPORT_RESULT_INVALID' });
-
-    expect(repository.get(PROJECT_ID)?.sources).toEqual([]);
-    expect(fileSystem.directoryExists(layout.sourceDirectoryUri(PROJECT_ID, SOURCE_ID))).toBe(
-      false,
+    await fileSystem.moveDirectory(
+      layout.sourceDirectoryUri(PROJECT_ID, SOURCE_ID),
+      layout.sourceDeleteDirectoryUri(DELETE_JOB_ID),
     );
-    expect(fileSystem.fileExists(layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID))).toBe(
-      false,
-    );
-  });
+    if (projectCommitted) {
+      await json.write(layout.projectMetadataUri(PROJECT_ID), updated, (raw) => snapProject(raw));
+    }
+    return { ...setup, updated };
+  }
 
-  it('rolls back a moved source when its actual native hash does not match', async () => {
-    const { fileSystem, layout, repository } = await setupStagedImport(
-      verifier({ fileSizeBytes: 500, sha256: 'c'.repeat(64) }),
-    );
+  function snapProject(raw: unknown): SnapCutProject {
+    return snapCutProjectSchema.parse(raw) as SnapCutProject;
+  }
 
-    await expect(
-      repository.finalizeImport({
-        jobId: JOB_ID,
-        projectId: PROJECT_ID,
-        clipId: CLIP_ID,
-        targetTrackId: 'track-1',
-        source: source(),
-        privateAudioSha256: HASH,
-      }),
-    ).rejects.toMatchObject({ code: 'IMPORT_RESULT_INVALID' });
-
-    expect(repository.get(PROJECT_ID)?.sources).toEqual([]);
-    expect(fileSystem.directoryExists(layout.sourceDirectoryUri(PROJECT_ID, SOURCE_ID))).toBe(
-      false,
-    );
-    expect(fileSystem.fileExists(layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID))).toBe(
-      false,
-    );
-  });
-
-  it('rolls back the journal when the source directory never moves', async () => {
-    const { fileSystem, layout, repository } = await setupStagedImport(verifier());
-    fileSystem.throwBeforeDirectoryMove = true;
-
-    await expect(
-      repository.finalizeImport({
-        jobId: JOB_ID,
-        projectId: PROJECT_ID,
-        clipId: CLIP_ID,
-        targetTrackId: 'track-1',
-        source: source(),
-        privateAudioSha256: HASH,
-      }),
-    ).rejects.toMatchObject({ code: 'IMPORT_RESULT_INVALID' });
-
-    expect(repository.get(PROJECT_ID)?.sources).toEqual([]);
-    expect(fileSystem.fileExists(layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID))).toBe(
-      false,
-    );
-    expect(fileSystem.directoryExists(layout.transactionDirectoryUri(JOB_ID))).toBe(false);
-  });
-
-  it('rolls back final media when project metadata cannot be written', async () => {
-    const { fileSystem, layout, repository } = await setupStagedImport(verifier());
-    fileSystem.throwOnWriteUri = `${layout.projectMetadataUri(PROJECT_ID)}.tmp`;
-
-    await expect(
-      repository.finalizeImport({
-        jobId: JOB_ID,
-        projectId: PROJECT_ID,
-        clipId: CLIP_ID,
-        targetTrackId: 'track-1',
-        source: source(),
-        privateAudioSha256: HASH,
-      }),
-    ).rejects.toThrow('Simulated file write failure');
-
-    expect(repository.get(PROJECT_ID)?.sources).toEqual([]);
-    expect(fileSystem.directoryExists(layout.sourceDirectoryUri(PROJECT_ID, SOURCE_ID))).toBe(
-      false,
-    );
-    expect(fileSystem.fileExists(layout.projectTransactionJournalUri(PROJECT_ID, JOB_ID))).toBe(
-      false,
-    );
-  });
-
-  it('keeps an officially committed source when cleanup reports a post-commit failure', async () => {
-    const { fileSystem, layout, repository } = await setupStagedImport(verifier());
-    fileSystem.commitThenThrowOnMoveUri = layout.projectMetadataUri(PROJECT_ID);
-
-    const committed = await repository.finalizeImport({
-      jobId: JOB_ID,
-      projectId: PROJECT_ID,
-      clipId: CLIP_ID,
-      targetTrackId: 'track-1',
-      source: source(),
-      privateAudioSha256: HASH,
-    });
-
-    expect(committed.sources.map(({ id }) => id)).toEqual([SOURCE_ID]);
+  it('restores source files when project.json still references the source', async () => {
+    const { fileSystem, layout } = await seedDeletionTransaction(false);
+    const report = await new RecoveryService(layout).recover();
+    expect(report.projects[0]?.repairStatus).toEqual({ state: 'ready', issues: [] });
     expect(fileSystem.directoryExists(layout.sourceDirectoryUri(PROJECT_ID, SOURCE_ID))).toBe(true);
-    expect(repository.get(PROJECT_ID)?.sources.map(({ id }) => id)).toEqual([SOURCE_ID]);
+    expect(fileSystem.directoryExists(layout.sourceDeleteDirectoryUri(DELETE_JOB_ID))).toBe(false);
   });
 
-  it('cancels staging idempotently and permits the next import without restart', async () => {
-    const { layout } = setup();
-    const repository = new ProjectRepository({
-      layout,
-      now: () => NOW,
-      idFactory: () => PROJECT_ID,
-    });
-    await repository.initialize();
-    await repository.create({ name: 'Import' });
-    repository.beginImport({
-      jobId: JOB_ID,
-      projectId: PROJECT_ID,
-      sourceId: SOURCE_ID,
-      privateAudioFileName: 'source.m4a',
-    });
+  it('finishes deleting app-private files when project.json no longer references them', async () => {
+    const { fileSystem, layout } = await seedDeletionTransaction(true);
+    const report = await new RecoveryService(layout).recover();
+    expect(report.projects[0]?.project.sources).toEqual([]);
+    expect(fileSystem.directoryExists(layout.sourceDeleteDirectoryUri(DELETE_JOB_ID))).toBe(false);
+    expect(
+      fileSystem.fileExists(layout.projectSourceDeleteJournalUri(PROJECT_ID, DELETE_JOB_ID)),
+    ).toBe(false);
+  });
 
-    repository.cancelImport(JOB_ID);
-    repository.cancelImport(JOB_ID);
-    const next = repository.beginImport({
-      jobId: 'job-2',
-      projectId: PROJECT_ID,
-      sourceId: SOURCE_ID,
-      privateAudioFileName: 'source.m4a',
-    });
+  it('does not follow a journal job ID that differs from its strict filename binding', async () => {
+    const { fileSystem, layout, updated } = await seedDeletionTransaction(true);
+    const journalUri = layout.projectSourceDeleteJournalUri(PROJECT_ID, DELETE_JOB_ID);
+    const otherDeletionDirectory = layout.sourceDeleteDirectoryUri(OTHER_DELETE_JOB_ID);
+    fileSystem.ensureDirectory(otherDeletionDirectory);
+    fileSystem.writeMedia(fileSystem.join(otherDeletionDirectory, 'foreign-private-media'), 128);
+    fileSystem.writeText(
+      journalUri,
+      JSON.stringify({
+        schemaVersion: 1,
+        jobId: OTHER_DELETE_JOB_ID,
+        projectId: PROJECT_ID,
+        sourceId: SOURCE_ID,
+        projectUpdatedAt: updated.updatedAt,
+      }),
+    );
 
-    expect(next.jobId).toBe('job-2');
+    const report = await new RecoveryService(layout).recover();
+
+    expect(report.projects[0]?.repairStatus).toEqual({
+      state: 'needs-repair',
+      issues: ['INCOMPLETE_SOURCE_DELETE_TRANSACTION'],
+    });
+    expect(fileSystem.directoryExists(layout.sourceDeleteDirectoryUri(DELETE_JOB_ID))).toBe(true);
+    expect(fileSystem.directoryExists(otherDeletionDirectory)).toBe(true);
+    expect(fileSystem.fileExists(journalUri)).toBe(true);
+  });
+
+  it('does not touch staging for a journal owned by another project', async () => {
+    const { fileSystem, layout, updated } = await seedDeletionTransaction(true);
+    const journalUri = layout.projectSourceDeleteJournalUri(PROJECT_ID, DELETE_JOB_ID);
+    const deletionDirectory = layout.sourceDeleteDirectoryUri(DELETE_JOB_ID);
+    fileSystem.writeText(
+      journalUri,
+      JSON.stringify({
+        schemaVersion: 1,
+        jobId: DELETE_JOB_ID,
+        projectId: OTHER_PROJECT_ID,
+        sourceId: SOURCE_ID,
+        projectUpdatedAt: updated.updatedAt,
+      }),
+    );
+
+    const report = await new RecoveryService(layout).recover();
+
+    expect(report.projects[0]?.repairStatus).toEqual({
+      state: 'needs-repair',
+      issues: ['INCOMPLETE_SOURCE_DELETE_TRANSACTION'],
+    });
+    expect(fileSystem.directoryExists(deletionDirectory)).toBe(true);
+    expect(fileSystem.fileExists(journalUri)).toBe(true);
   });
 });

@@ -14,13 +14,20 @@ export interface ProjectRepositoryPort {
   create(options?: { name?: string | null }): MaybePromise<SnapCutProject>;
   save(project: SnapCutProject): MaybePromise<SnapCutProject>;
   rename(id: string, name: string): MaybePromise<SnapCutProject>;
+  renameSource?(
+    projectId: string,
+    sourceId: string,
+    displayName: string,
+  ): MaybePromise<SnapCutProject>;
+  deleteSource?(projectId: string, sourceId: string): MaybePromise<SnapCutProject>;
   delete(id: string): MaybePromise<void>;
   getRepairStatus?(id: string): MaybePromise<ProjectRepairStatus | null>;
   listCorruptProjectIds?(): MaybePromise<string[]>;
   deleteCorruptProject?(id: string): MaybePromise<void>;
 }
 
-export type ProjectMutation = 'create' | 'rename' | 'delete' | 'save';
+export type ProjectMutation =
+  'create' | 'rename' | 'rename-source' | 'delete-source' | 'delete' | 'save';
 export type ProjectUpdater = (project: SnapCutProject) => SnapCutProject;
 
 export interface ProjectReleasePort {
@@ -42,6 +49,8 @@ interface ProjectStoreState {
   loadProject: (projectId: string) => Promise<void>;
   createProject: (name?: string | null) => Promise<SnapCutProject | null>;
   renameProject: (projectId: string, name: string) => Promise<boolean>;
+  renameSource: (projectId: string, sourceId: string, name: string) => Promise<boolean>;
+  deleteSource: (projectId: string, sourceId: string) => Promise<boolean>;
   deleteProject: (projectId: string) => Promise<boolean>;
   deleteCorruptProject: (projectId: string) => Promise<boolean>;
   updateProject: (projectId: string, update: ProjectUpdater) => Promise<SnapCutProject | null>;
@@ -218,6 +227,61 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
       return true;
     } catch {
       set({ error: copy.projects.renameError });
+      return false;
+    } finally {
+      set({ mutation: null });
+    }
+  },
+
+  renameSource: async (projectId, sourceId, name) => {
+    set({ mutation: 'rename-source', error: null });
+    try {
+      const repository = await initializeRepository();
+      if (!repository.renameSource) throw new Error('Source rename is unavailable.');
+      const project = await repository.renameSource(projectId, sourceId, name);
+      set((state) => ({
+        projects: replaceProject(state.projects, project),
+        activeProject: state.activeProject?.id === projectId ? project : state.activeProject,
+      }));
+      return true;
+    } catch {
+      set({ error: 'The source could not be renamed.' });
+      return false;
+    } finally {
+      set({ mutation: null });
+    }
+  },
+
+  deleteSource: async (projectId, sourceId) => {
+    set({ mutation: 'delete-source', error: null });
+    try {
+      const repository = await initializeRepository();
+      if (!repository.deleteSource) throw new Error('Source deletion is unavailable.');
+      const project = await repository.deleteSource(projectId, sourceId);
+      const repairStatus = (await repository.getRepairStatus?.(projectId)) ?? {
+        state: 'ready' as const,
+        issues: [],
+      };
+      set((state) => ({
+        projects: replaceProject(state.projects, project),
+        activeProject: state.activeProject?.id === projectId ? project : state.activeProject,
+        repairStatuses: {
+          ...state.repairStatuses,
+          [projectId]: repairStatus,
+        },
+      }));
+      return true;
+    } catch (caught: unknown) {
+      const code =
+        typeof caught === 'object' && caught !== null && 'code' in caught
+          ? String(caught.code)
+          : null;
+      set({
+        error:
+          code === 'SOURCE_IN_USE'
+            ? 'Remove clips that use this source first.'
+            : 'The source could not be deleted.',
+      });
       return false;
     } finally {
       set({ mutation: null });

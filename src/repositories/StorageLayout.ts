@@ -6,14 +6,19 @@ export const STAGING_DIRECTORY_NAME = 'staging';
 export const SOURCES_DIRECTORY_NAME = 'sources';
 
 export const INDEX_FILE_NAME = 'index.json';
+export const STORAGE_GENERATION_FILE_NAME = 'storage-generation.json';
 export const PROJECT_FILE_NAME = 'project.json';
 export const SOURCE_METADATA_FILE_NAME = 'source.json';
 export const WAVEFORM_FILE_NAME = 'waveform.json';
 export const TRANSACTION_DIRECTORY_PREFIX = '.import-';
 export const TRANSACTION_JOURNAL_SUFFIX = '.journal.json';
+export const SOURCE_DELETE_DIRECTORY_PREFIX = '.source-delete-';
+export const SOURCE_DELETE_JOURNAL_SUFFIX = '.source-delete.journal.json';
 
 const SAFE_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SAFE_MEDIA_FILE_NAME = /^source\.(?:m4a|m4s|mp3|flac|wav|aac)$/i;
+const SOURCE_DELETE_JOURNAL_FILE_PATTERN =
+  /^\.source-delete-([A-Za-z0-9][A-Za-z0-9._-]*)\.source-delete\.journal\.json$/u;
 
 export function assertSafeStorageComponent(value: string, label: string): void {
   if (!SAFE_COMPONENT.test(value) || value === '.' || value === '..') {
@@ -64,6 +69,10 @@ export class StorageLayout {
 
   get indexUri(): string {
     return this.fileSystem.join(this.rootUri, INDEX_FILE_NAME);
+  }
+
+  get storageGenerationUri(): string {
+    return this.fileSystem.join(this.rootUri, STORAGE_GENERATION_FILE_NAME);
   }
 
   ensureBaseDirectories(): void {
@@ -153,6 +162,22 @@ export class StorageLayout {
     );
   }
 
+  sourceDeleteDirectoryUri(jobId: string): string {
+    assertSafeStorageComponent(jobId, 'Source delete job ID');
+    return this.fileSystem.join(
+      this.stagingDirectoryUri,
+      `${SOURCE_DELETE_DIRECTORY_PREFIX}${jobId}`,
+    );
+  }
+
+  projectSourceDeleteJournalUri(projectId: string, jobId: string): string {
+    assertSafeStorageComponent(jobId, 'Source delete job ID');
+    return this.fileSystem.join(
+      this.projectDirectoryUri(projectId),
+      `${SOURCE_DELETE_DIRECTORY_PREFIX}${jobId}${SOURCE_DELETE_JOURNAL_SUFFIX}`,
+    );
+  }
+
   isInsideProjects(uri: string): boolean {
     return isDirectOrNestedChild(this.projectsDirectoryUri, uri);
   }
@@ -171,6 +196,22 @@ export class StorageLayout {
     }
     const name = uri.slice(prefix.length);
     return /^\.import-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name);
+  }
+
+  sourceDeleteJobIdFromJournalFileName(fileName: string): string | null {
+    return SOURCE_DELETE_JOURNAL_FILE_PATTERN.exec(fileName)?.[1] ?? null;
+  }
+
+  isSourceDeleteDirectoryUri(uri: string): boolean {
+    const prefix = `${this.stagingDirectoryUri.replace(/\/+$/, '')}/`;
+    if (!uri.startsWith(prefix) || uri.includes('\\')) return false;
+    try {
+      if (decodeURIComponent(uri) !== uri) return false;
+    } catch {
+      return false;
+    }
+    const name = uri.slice(prefix.length);
+    return /^\.source-delete-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(name);
   }
 }
 

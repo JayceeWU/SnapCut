@@ -22,6 +22,7 @@ import type {
   SnapCutMediaSubscription,
 } from '@/native';
 import {
+  buildNativeSequentialClips,
   previewCoordinator,
   type CommittedSourceResolverPort,
   PrivateSourceResolver,
@@ -117,12 +118,12 @@ export class ExportCoordinator {
       this.media.addEventListener('onNativeError', (event) => this.handleError(event)),
     ];
     this.appStateSubscription = this.appState.addEventListener('change', (state) => {
-      if (state !== 'active' && this.active) void this.cancel();
+      if (state !== 'active' && this.active) void this.cancel().catch(() => undefined);
     });
   }
 
   stop(): void {
-    void this.cancel();
+    void this.cancel().catch(() => undefined);
     this.subscriptions.forEach((subscription) => subscription.remove());
     this.subscriptions = [];
     this.appStateSubscription?.remove();
@@ -135,7 +136,6 @@ export class ExportCoordinator {
     if (project.clips.length === 0) throw new Error('Cannot export an empty composition.');
     this.start();
     await this.cancel();
-    await this.preview.releaseProject(project.id);
 
     const active = this.createJob(project.id, 'preflight', null);
     const token = ++this.operationToken;
@@ -148,6 +148,7 @@ export class ExportCoordinator {
       );
 
     try {
+      await this.preview.releaseProject(project.id);
       const preflight = await this.queue.enqueue(
         { operation: 'export', jobId: active.jobId },
         async () => {
@@ -173,6 +174,9 @@ export class ExportCoordinator {
 
   async export(project: SnapCutProject): Promise<SnapCutExportRecord> {
     const state = useExportStore.getState();
+    if (this.active || state.status !== 'ready') {
+      throw new Error('An export operation is already active or preflight is not ready.');
+    }
     const preflight = state.preflight;
     const selectedFormat = state.selectedFormat;
     if (!preflight || !selectedFormat || state.projectId !== project.id) {
@@ -186,12 +190,12 @@ export class ExportCoordinator {
     const outputChannelCount = format.channelCount;
     const usesM4aStreamCopy = selectedFormat === 'm4a' && format.mode === 'aac-stream-copy';
     const displayNameWithoutExtension = validateExportBaseName(state.displayNameWithoutExtension);
-    await this.preview.releaseProject(project.id);
 
     const active = this.createJob(project.id, 'export', selectedFormat);
     const token = ++this.operationToken;
     useExportStore.getState().beginExport(active);
     try {
+      await this.preview.releaseProject(project.id);
       const result = await this.queue.enqueue(
         { operation: 'export', jobId: active.jobId },
         async () => {
@@ -236,8 +240,10 @@ export class ExportCoordinator {
         await this.media.cancelExport(active.jobId);
       }
     } finally {
-      if (this.active === active) this.active = null;
-      useExportStore.getState().fail(copy.export.cancelled);
+      if (this.active === active) {
+        this.active = null;
+        useExportStore.getState().fail(copy.export.cancelled);
+      }
     }
   }
 
@@ -255,6 +261,7 @@ export class ExportCoordinator {
     operation: ActiveJob['operation'],
     format: SnapCutExportFormat | null,
   ): ActiveJob {
+    if (this.active) throw new Error('An export operation is already active.');
     const active: ActiveJob = {
       projectId,
       jobId: this.idFactory(),
@@ -268,22 +275,7 @@ export class ExportCoordinator {
   }
 
   private nativeClips(project: SnapCutProject): NativePreviewClip[] {
-    return project.clips.map((clip) => {
-      const source = project.sources.find(({ id }) => id === clip.sourceId);
-      if (!source) throw new Error(`Missing source for clip ${clip.id}.`);
-      return {
-        clipId: clip.id,
-        sourceId: source.id,
-        audioFileUri: this.sourceResolver.resolveSourceAudioUri(project, source),
-        startMs: clip.startMs,
-        endMs: clip.endMs,
-        trackId: clip.trackId,
-        timelineStartMs: clip.timelineStartMs,
-        gain: clip.gain,
-        fadeInMs: clip.fadeInMs,
-        fadeOutMs: clip.fadeOutMs,
-      };
-    });
+    return buildNativeSequentialClips(project, project.clips, this.sourceResolver);
   }
 
   private decodedRate(value: number): 32_000 | 44_100 | 48_000 {
@@ -317,6 +309,11 @@ export class ExportCoordinator {
     ) {
       return;
     }
+    // Native error events are terminal for their matching job. Revoke JS
+    // ownership before updating the store so a late promise resolution cannot
+    // replace the visible failure with success, and Close can reset normally.
+    ++this.operationToken;
+    this.active = null;
     this.recordFailure(active, event.stage, event);
     useExportStore
       .getState()

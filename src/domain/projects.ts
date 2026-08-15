@@ -39,7 +39,6 @@ export function createProject(input: CreateProjectInput): SnapCutProject {
     createdAt: now,
     updatedAt: now,
     sources: [],
-    trackCount: 2,
     clips: [],
     lastExport: null,
   }) as SnapCutProject;
@@ -94,6 +93,61 @@ export function addSource(
     sources: [...project.sources, source],
     updatedAt,
   }) as SnapCutProject;
+}
+
+export function renameSource(
+  projectInput: SnapCutProject,
+  sourceId: string,
+  displayName: string,
+  updatedAt = projectInput.updatedAt,
+): SnapCutProject {
+  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+  const normalized = displayName.trim();
+  if (normalized.length === 0 || [...normalized].length > 255) {
+    throw new DomainError(
+      'INVALID_SOURCE_NAME',
+      'Source name must contain 1 to 255 Unicode characters.',
+    );
+  }
+  if (!project.sources.some(({ id }) => id === sourceId)) {
+    throw new DomainError('SOURCE_NOT_FOUND', `Source does not exist: ${sourceId}`);
+  }
+  return snapCutProjectSchema.parse({
+    ...project,
+    sources: project.sources.map((source) =>
+      source.id === sourceId ? { ...source, displayName: normalized } : source,
+    ),
+    updatedAt,
+  }) as SnapCutProject;
+}
+
+export function removeUnusedSource(
+  projectInput: SnapCutProject,
+  sourceId: string,
+  updatedAt = projectInput.updatedAt,
+): SnapCutProject {
+  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+  if (!project.sources.some(({ id }) => id === sourceId)) {
+    throw new DomainError('SOURCE_NOT_FOUND', `Source does not exist: ${sourceId}`);
+  }
+  if (project.clips.some((clip) => clip.sourceId === sourceId)) {
+    throw new DomainError('SOURCE_IN_USE', 'Remove clips that use this source first.');
+  }
+  return snapCutProjectSchema.parse({
+    ...project,
+    sources: project.sources.filter(({ id }) => id !== sourceId),
+    updatedAt,
+  }) as SnapCutProject;
+}
+
+export function nextDefaultSourceName(sources: readonly SnapCutSource[]): string {
+  const highest = sources.reduce((maximum, source) => {
+    const match = /^Source ([1-9]\d*)$/u.exec(source.displayName);
+    if (match === null) return maximum;
+    const value = Number(match[1]);
+    return Number.isSafeInteger(value) ? Math.max(maximum, value) : maximum;
+  }, 0);
+  return `Source ${highest + 1}`;
 }
 
 export function setLastExport(

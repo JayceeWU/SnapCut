@@ -4,18 +4,19 @@ import { StyleSheet } from 'react-native';
 import {
   AppButton,
   CorruptProjectCard,
+  ConfirmDeleteModal,
   EmptyState,
   ErrorBanner,
   PlaybackControls,
   ProjectNameModal,
   ProjectCard,
+  SourceNameModal,
 } from '@/components';
 import { copy } from '@/constants';
 import type { SnapCutProject } from '@/domain';
 
 const projectFixture: SnapCutProject = {
-  schemaVersion: 6,
-  trackCount: 2,
+  schemaVersion: 7,
   namePromptCompleted: true,
   id: '11111111-1111-4111-8111-111111111111',
   name: 'Repair me',
@@ -80,6 +81,88 @@ describe('shared UI components', () => {
     expect(onSubmit).toHaveBeenCalledWith('Purple Session');
   });
 
+  it('keeps project-name operation failures visible and blocks dismissal while busy', async () => {
+    const onCancel = jest.fn();
+    const screen = await render(
+      <ProjectNameModal
+        busy
+        initialName="Field Notes"
+        onCancel={onCancel}
+        onSubmit={jest.fn()}
+        operationError="The project could not be renamed."
+        visible
+      />,
+    );
+
+    expect(screen.getByTestId('project-name-dialog')).toBeTruthy();
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.getByText('The project could not be renamed.')).toBeTruthy();
+    const backdrop = screen.getByTestId('project-name-backdrop', {
+      includeHiddenElements: true,
+    });
+    expect(backdrop).toBeDisabled();
+    await fireEvent.press(backdrop);
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByTestId('project-name-modal').props.onRequestClose).toBeUndefined();
+  });
+
+  it('keeps delete failures visible and blocks dismissal while busy', async () => {
+    const onCancel = jest.fn();
+    const screen = await render(
+      <ConfirmDeleteModal
+        busy
+        onCancel={onCancel}
+        onConfirm={jest.fn()}
+        operationError="The project could not be deleted."
+        projectName="Field Notes"
+        visible
+      />,
+    );
+
+    expect(screen.getByTestId('confirm-delete-dialog')).toBeTruthy();
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.getByText('The project could not be deleted.')).toBeTruthy();
+    const backdrop = screen.getByTestId('confirm-delete-backdrop', {
+      includeHiddenElements: true,
+    });
+    expect(backdrop).toBeDisabled();
+    await fireEvent.press(backdrop);
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByTestId('confirm-delete-modal').props.onRequestClose).toBeUndefined();
+  });
+
+  it('counts source names by Unicode code point up to 255 characters', async () => {
+    const onSubmit = jest.fn();
+    const screen = await render(
+      <SourceNameModal initialName="Source 1" onCancel={jest.fn()} onSubmit={onSubmit} visible />,
+    );
+    const field = screen.getByLabelText('Source name');
+    const validName = '🎵'.repeat(255);
+    await fireEvent.changeText(field, validName);
+    await fireEvent.press(screen.getByRole('button', { name: 'Save' }));
+    expect(onSubmit).toHaveBeenCalledWith(validName);
+
+    await fireEvent.changeText(field, '🎵'.repeat(256));
+    await fireEvent.press(screen.getByRole('button', { name: 'Save' }));
+    expect(screen.getByText('Use 255 characters or fewer.')).toBeTruthy();
+  });
+
+  it('uses a fixed source-name title even when the existing name is very long', async () => {
+    const longName = 'A'.repeat(255);
+    const screen = await render(
+      <SourceNameModal
+        initialName={longName}
+        onCancel={jest.fn()}
+        onSubmit={jest.fn()}
+        title="Rename Source"
+        visible
+      />,
+    );
+
+    expect(screen.getByRole('header', { name: 'Rename Source' })).toBeTruthy();
+    expect(screen.queryByRole('header', { name: longName })).toBeNull();
+  });
+
   it('renders compact native-clock playback state and session history actions', async () => {
     const onUndo = jest.fn();
     const onRedo = jest.fn();
@@ -105,10 +188,10 @@ describe('shared UI components', () => {
     expect(screen.getByRole('button', { name: copy.editor.compositionPauseAction })).toBeTruthy();
     expect(
       StyleSheet.flatten(screen.getByTestId('composition-transport').props.style),
-    ).toMatchObject({ height: 48 });
-    expect(screen.getByText(copy.editor.playbackPosition('0:02', '0:12'))).toBeTruthy();
-    expect(screen.queryByText(copy.editor.seekBackward)).toBeNull();
-    expect(screen.queryByText(copy.editor.seekForward)).toBeNull();
+    ).toMatchObject({ minHeight: 48 });
+    expect(screen.getByText('0:02.000 / 0:12.000')).toBeTruthy();
+    expect(screen.queryByText('Back 5 seconds')).toBeNull();
+    expect(screen.queryByText('Forward 5 seconds')).toBeNull();
     await fireEvent.press(screen.getByRole('button', { name: copy.editor.undoAction }));
     expect(onUndo).toHaveBeenCalledTimes(1);
     const redo = screen.getByRole('button', { name: copy.editor.redoAction });

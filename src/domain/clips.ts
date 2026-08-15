@@ -3,13 +3,7 @@ import { assertIntegerMilliseconds } from '@/utils/time';
 import { FADE_DURATION_VALUES_MS, MIN_CLIP_DURATION_MS } from './constants';
 import { DomainError } from './errors';
 import { snapCutClipSchema, snapCutProjectSchema } from './schemas';
-import {
-  clipDurationMs,
-  clipTimelineEndMs,
-  findClipCollisionIds,
-  snapClipTimelineStartMs,
-  trackTimelineEndMs,
-} from './timeline';
+import { clipDurationMs } from './timeline';
 import type { FadeDurationMs, SnapCutClip, SnapCutProject, TrackId } from './types';
 
 export type ClipUpdate = Partial<Omit<SnapCutClip, 'id'>>;
@@ -29,11 +23,7 @@ function parseClip(clipInput: SnapCutClip): SnapCutClip {
   return parsed.data as SnapCutClip;
 }
 
-function validateClipAgainstProject(
-  clipInput: SnapCutClip,
-  project: SnapCutProject,
-  excludeClipId?: string,
-): SnapCutClip {
+function validateClipAgainstProject(clipInput: SnapCutClip, project: SnapCutProject): SnapCutClip {
   const clip = parseClip(clipInput);
   const source = project.sources.find(({ id }) => id === clip.sourceId);
   if (!source) {
@@ -42,24 +32,21 @@ function validateClipAgainstProject(
   if (clip.endMs > source.durationMs) {
     throw new DomainError('INVALID_CLIP_RANGE', 'Clip end cannot exceed source duration');
   }
-  if (clip.endMs - clip.startMs < MIN_CLIP_DURATION_MS) {
+  if (clipDurationMs(clip) < MIN_CLIP_DURATION_MS) {
     throw new DomainError(
       'INVALID_CLIP_RANGE',
       `Clip duration must be at least ${MIN_CLIP_DURATION_MS} milliseconds`,
     );
   }
-  if (findClipCollisionIds(project.clips, clip, excludeClipId).length > 0) {
-    throw new DomainError('CLIP_COLLISION', 'Clips on the same track cannot overlap.');
-  }
   return clip;
 }
 
-function commitProject(
+function commitClips(
   project: SnapCutProject,
-  patch: Partial<Pick<SnapCutProject, 'clips' | 'trackCount'>>,
+  clips: readonly SnapCutClip[],
   updatedAt: string,
 ): SnapCutProject {
-  return snapCutProjectSchema.parse({ ...project, ...patch, updatedAt }) as SnapCutProject;
+  return snapCutProjectSchema.parse({ ...project, clips, updatedAt }) as SnapCutProject;
 }
 
 export function validateClipRange(
@@ -71,13 +58,10 @@ export function validateClipRange(
   if (!source) {
     throw new DomainError('SOURCE_NOT_FOUND', `Clip source does not exist: ${parsed.sourceId}`);
   }
-  if (parsed.endMs > source.durationMs) {
-    throw new DomainError('INVALID_CLIP_RANGE', 'Clip end cannot exceed source duration');
-  }
-  if (clipDurationMs(parsed) < MIN_CLIP_DURATION_MS) {
+  if (parsed.endMs > source.durationMs || clipDurationMs(parsed) < MIN_CLIP_DURATION_MS) {
     throw new DomainError(
       'INVALID_CLIP_RANGE',
-      `Clip duration must be at least ${MIN_CLIP_DURATION_MS} milliseconds`,
+      `Clip must fit the source and be at least ${MIN_CLIP_DURATION_MS} milliseconds.`,
     );
   }
   return parsed;
@@ -92,8 +76,11 @@ export function addClip(
   if (project.clips.some(({ id }) => id === clipInput.id)) {
     throw new DomainError('DUPLICATE_ID', `Clip ID already exists: ${clipInput.id}`);
   }
-  const clip = validateClipAgainstProject(clipInput, project);
-  return commitProject(project, { clips: [...project.clips, clip] }, updatedAt);
+  return commitClips(
+    project,
+    [...project.clips, validateClipAgainstProject(clipInput, project)],
+    updatedAt,
+  );
 }
 
 export function updateClip(
@@ -104,18 +91,14 @@ export function updateClip(
 ): SnapCutProject {
   const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
   const index = project.clips.findIndex(({ id }) => id === clipId);
-  if (index < 0) {
-    throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
-  }
-  const existing = project.clips[index]!;
+  if (index < 0) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
   const replacement = validateClipAgainstProject(
-    { ...existing, ...update, id: clipId },
+    { ...project.clips[index]!, ...update, id: clipId },
     project,
-    clipId,
   );
   const clips = project.clips.slice();
   clips[index] = replacement;
-  return commitProject(project, { clips }, updatedAt);
+  return commitClips(project, clips, updatedAt);
 }
 
 export function deleteClip(
@@ -127,60 +110,61 @@ export function deleteClip(
   if (!project.clips.some(({ id }) => id === clipId)) {
     throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
   }
-  return commitProject(
+  return commitClips(
     project,
-    { clips: project.clips.filter(({ id }) => id !== clipId) },
+    project.clips.filter(({ id }) => id !== clipId),
     updatedAt,
   );
 }
 
-export function placeClip(
+/** Moves a clip to an exact zero-based array position. */
+export function reorderClip(
   projectInput: SnapCutProject,
   clipId: string,
-  requestedTimelineStartMs: number,
-  trackId?: TrackId,
+  destinationIndex: number,
   updatedAt = projectInput.updatedAt,
 ): SnapCutProject {
   const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
-  const clip = project.clips.find(({ id }) => id === clipId);
-  if (!clip) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
-  const destinationTrackId = trackId ?? clip.trackId;
-  const timelineStartMs = snapClipTimelineStartMs(
-    project.clips,
-    clip,
-    requestedTimelineStartMs,
-    destinationTrackId,
-    clipId,
-  );
-  return updateClip(project, clipId, { trackId: destinationTrackId, timelineStartMs }, updatedAt);
+  const sourceIndex = project.clips.findIndex(({ id }) => id === clipId);
+  if (sourceIndex < 0) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
+  if (
+    !Number.isSafeInteger(destinationIndex) ||
+    destinationIndex < 0 ||
+    destinationIndex >= project.clips.length
+  ) {
+    throw new DomainError('MOVE_OUT_OF_BOUNDS', 'Clip destination is outside the composition.');
+  }
+  if (sourceIndex === destinationIndex) return project;
+  const clips = project.clips.slice();
+  const [clip] = clips.splice(sourceIndex, 1);
+  clips.splice(destinationIndex, 0, clip!);
+  return commitClips(project, clips, updatedAt);
 }
 
-export function moveClipToStart(
-  project: SnapCutProject,
-  clipId: string,
-  trackId?: TrackId,
-  updatedAt = project.updatedAt,
-): SnapCutProject {
-  return placeClip(project, clipId, 0, trackId, updatedAt);
-}
-
-export function moveClipToEnd(
+export function moveClipEarlier(
   projectInput: SnapCutProject,
   clipId: string,
-  trackId?: TrackId,
   updatedAt = projectInput.updatedAt,
 ): SnapCutProject {
   const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
-  const clip = project.clips.find(({ id }) => id === clipId);
-  if (!clip) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
-  const destinationTrackId = trackId ?? clip.trackId;
-  return placeClip(
-    project,
-    clipId,
-    trackTimelineEndMs(project.clips, destinationTrackId, clipId),
-    destinationTrackId,
-    updatedAt,
-  );
+  const index = project.clips.findIndex(({ id }) => id === clipId);
+  if (index < 0) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
+  if (index === 0) throw new DomainError('MOVE_OUT_OF_BOUNDS', 'Clip is already first.');
+  return reorderClip(project, clipId, index - 1, updatedAt);
+}
+
+export function moveClipLater(
+  projectInput: SnapCutProject,
+  clipId: string,
+  updatedAt = projectInput.updatedAt,
+): SnapCutProject {
+  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+  const index = project.clips.findIndex(({ id }) => id === clipId);
+  if (index < 0) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
+  if (index === project.clips.length - 1) {
+    throw new DomainError('MOVE_OUT_OF_BOUNDS', 'Clip is already last.');
+  }
+  return reorderClip(project, clipId, index + 1, updatedAt);
 }
 
 export function duplicateClip(
@@ -190,142 +174,29 @@ export function duplicateClip(
   updatedAt = projectInput.updatedAt,
 ): SnapCutProject {
   const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
-  const original = project.clips.find(({ id }) => id === clipId);
-  if (!original) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
+  const index = project.clips.findIndex(({ id }) => id === clipId);
+  if (index < 0) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
   if (project.clips.some(({ id }) => id === newClipId)) {
     throw new DomainError('DUPLICATE_ID', `Clip ID already exists: ${newClipId}`);
   }
-  const candidate = { ...original, id: newClipId, timelineStartMs: clipTimelineEndMs(original) };
-  const timelineStartMs = snapClipTimelineStartMs(
-    project.clips,
-    candidate,
-    candidate.timelineStartMs,
-    candidate.trackId,
-    undefined,
-  );
-  const duplicate = validateClipAgainstProject({ ...candidate, timelineStartMs }, project);
-  const originalIndex = project.clips.findIndex(({ id }) => id === clipId);
   const clips = project.clips.slice();
-  clips.splice(originalIndex + 1, 0, duplicate);
-  return commitProject(project, { clips }, updatedAt);
+  clips.splice(index + 1, 0, { ...project.clips[index]!, id: newClipId });
+  return commitClips(project, clips, updatedAt);
 }
 
-/** Returns the largest valid 500 ms fade that does not exceed either input. */
-export function fitFadeDurationMs(fadeMs: number, durationMs: number): FadeDurationMs {
-  return (
-    [...FADE_DURATION_VALUES_MS]
-      .reverse()
-      .find((value) => value <= fadeMs && value <= durationMs) ?? 0
-  );
-}
-
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(maximum, Math.max(minimum, value));
-}
-
-function fitTrimmedFades(
-  clip: SnapCutClip,
-  durationMs: number,
-  edge: ClipTrimEdge,
-): Pick<SnapCutClip, 'fadeInMs' | 'fadeOutMs'> {
-  let fadeInMs = clip.fadeInMs;
-  let fadeOutMs = clip.fadeOutMs;
-  if (fadeInMs + fadeOutMs <= durationMs) return { fadeInMs, fadeOutMs };
-
-  if (edge === 'left') {
-    fadeInMs = fitFadeDurationMs(fadeInMs, Math.max(0, durationMs - fadeOutMs));
-    if (fadeInMs + fadeOutMs > durationMs) {
-      fadeOutMs = fitFadeDurationMs(fadeOutMs, durationMs - fadeInMs);
-    }
-  } else {
-    fadeOutMs = fitFadeDurationMs(fadeOutMs, Math.max(0, durationMs - fadeInMs));
-    if (fadeInMs + fadeOutMs > durationMs) {
-      fadeInMs = fitFadeDurationMs(fadeInMs, durationMs - fadeOutMs);
-    }
-  }
-
-  return { fadeInMs, fadeOutMs };
-}
-
-/**
- * Trims one source edge without moving the opposite timeline edge or rippling
- * any neighbor. A drag request is clamped to source, duration, timeline, and
- * same-track gap bounds; clips on the other track do not constrain the trim.
- */
 export function trimClipEdge(
-  projectInput: SnapCutProject,
+  project: SnapCutProject,
   clipId: string,
   edge: ClipTrimEdge,
   requestedSourceMs: number,
-  updatedAt = projectInput.updatedAt,
+  updatedAt = project.updatedAt,
 ): SnapCutProject {
-  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+  const requested = assertIntegerMilliseconds(requestedSourceMs, 'requestedSourceMs');
   const clip = project.clips.find(({ id }) => id === clipId);
   if (!clip) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
-  if (edge !== 'left' && edge !== 'right') {
-    throw new DomainError('INVALID_CLIP_RANGE', `Unknown clip edge: ${String(edge)}`);
-  }
-  if (!Number.isSafeInteger(requestedSourceMs)) {
-    throw new DomainError(
-      'INVALID_TIMESTAMP',
-      'requestedSourceMs must be an integer number of milliseconds',
-    );
-  }
-
-  const source = project.sources.find(({ id }) => id === clip.sourceId)!;
-  const timelineEndMs = clipTimelineEndMs(clip);
-  const sameTrackNeighbors = project.clips.filter(
-    (candidate) => candidate.id !== clip.id && candidate.trackId === clip.trackId,
-  );
-
-  if (edge === 'left') {
-    const previousTimelineEndMs = sameTrackNeighbors.reduce(
-      (latest, candidate) =>
-        clipTimelineEndMs(candidate) <= clip.timelineStartMs
-          ? Math.max(latest, clipTimelineEndMs(candidate))
-          : latest,
-      0,
-    );
-    const minimumStartMs = Math.max(
-      0,
-      clip.startMs - clip.timelineStartMs,
-      clip.startMs + previousTimelineEndMs - clip.timelineStartMs,
-    );
-    const startMs = clamp(requestedSourceMs, minimumStartMs, clip.endMs - MIN_CLIP_DURATION_MS);
-    const durationMs = clip.endMs - startMs;
-    return updateClip(
-      project,
-      clipId,
-      {
-        startMs,
-        timelineStartMs: timelineEndMs - durationMs,
-        ...fitTrimmedFades(clip, durationMs, edge),
-      },
-      updatedAt,
-    );
-  }
-
-  const nextTimelineStartMs = sameTrackNeighbors.reduce(
-    (earliest, candidate) =>
-      candidate.timelineStartMs >= timelineEndMs
-        ? Math.min(earliest, candidate.timelineStartMs)
-        : earliest,
-    Number.POSITIVE_INFINITY,
-  );
-  const maximumEndMs = Math.min(
-    source.durationMs,
-    Number.isFinite(nextTimelineStartMs)
-      ? clip.startMs + nextTimelineStartMs - clip.timelineStartMs
-      : source.durationMs,
-  );
-  const endMs = clamp(requestedSourceMs, clip.startMs + MIN_CLIP_DURATION_MS, maximumEndMs);
-  const durationMs = endMs - clip.startMs;
-  return updateClip(
-    project,
-    clipId,
-    { endMs, ...fitTrimmedFades(clip, durationMs, edge) },
-    updatedAt,
-  );
+  return edge === 'left'
+    ? updateClip(project, clipId, { startMs: requested }, updatedAt)
+    : updateClip(project, clipId, { endMs: requested }, updatedAt);
 }
 
 export function splitClip(
@@ -342,92 +213,82 @@ export function splitClip(
     throw new DomainError('DUPLICATE_ID', `Clip ID already exists: ${newClipId}`);
   }
   const original = project.clips[index]!;
-  const sourceSplitMs = assertIntegerMilliseconds(sourceSplitMsInput, 'sourceSplitMs');
+  const splitMs = assertIntegerMilliseconds(sourceSplitMsInput, 'sourceSplitMs');
   if (
-    sourceSplitMs - original.startMs < MIN_CLIP_DURATION_MS ||
-    original.endMs - sourceSplitMs < MIN_CLIP_DURATION_MS
+    splitMs - original.startMs < MIN_CLIP_DURATION_MS ||
+    original.endMs - splitMs < MIN_CLIP_DURATION_MS
   ) {
-    throw new DomainError(
-      'INVALID_CLIP_RANGE',
-      `Each split clip must be at least ${MIN_CLIP_DURATION_MS} milliseconds.`,
-    );
+    throw new DomainError('INVALID_CLIP_RANGE', 'Both split ranges must be at least 100 ms.');
   }
-  const leftDurationMs = sourceSplitMs - original.startMs;
-  const rightDurationMs = original.endMs - sourceSplitMs;
-  const left: SnapCutClip = {
-    ...original,
-    endMs: sourceSplitMs,
-    fadeInMs: fitFadeDurationMs(original.fadeInMs, leftDurationMs),
-    fadeOutMs: 0,
-  };
-  const right: SnapCutClip = {
-    ...original,
-    id: newClipId,
-    startMs: sourceSplitMs,
-    timelineStartMs: original.timelineStartMs + leftDurationMs,
-    fadeInMs: 0,
-    fadeOutMs: fitFadeDurationMs(original.fadeOutMs, rightDurationMs),
-  };
   const clips = project.clips.slice();
-  clips.splice(index, 1, left, right);
-  return commitProject(project, { clips }, updatedAt);
+  clips.splice(
+    index,
+    1,
+    { ...original, endMs: splitMs },
+    { ...original, id: newClipId, startMs: splitMs },
+  );
+  return commitClips(project, clips, updatedAt);
 }
 
 export function addFullSourceClip(
   projectInput: SnapCutProject,
   sourceId: string,
   clipId: string,
-  trackId: TrackId = 'track-1',
-  updatedAt = projectInput.updatedAt,
+  legacyTrackOrUpdatedAt?: TrackId | string,
+  explicitUpdatedAt?: string,
 ): SnapCutProject {
   const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
   const source = project.sources.find(({ id }) => id === sourceId);
   if (!source) throw new DomainError('SOURCE_NOT_FOUND', `Source does not exist: ${sourceId}`);
+  const updatedAt =
+    explicitUpdatedAt ??
+    (legacyTrackOrUpdatedAt !== 'track-1' && legacyTrackOrUpdatedAt !== 'track-2'
+      ? legacyTrackOrUpdatedAt
+      : undefined) ??
+    project.updatedAt;
   return addClip(
     project,
-    {
-      id: clipId,
-      sourceId,
-      startMs: 0,
-      endMs: source.durationMs,
-      trackId,
-      timelineStartMs: trackTimelineEndMs(project.clips, trackId),
-      gain: 1,
-      fadeInMs: 0,
-      fadeOutMs: 0,
-    },
+    { id: clipId, sourceId, startMs: 0, endMs: source.durationMs },
     updatedAt,
   );
 }
 
-export function moveClipEarlier(
-  projectInput: SnapCutProject,
+/** Kept for callers that still use the old helper name; v7 simply reorders. */
+export function moveClipToStart(
+  project: SnapCutProject,
   clipId: string,
-  updatedAt = projectInput.updatedAt,
+  _trackId?: TrackId,
+  updatedAt = project.updatedAt,
 ): SnapCutProject {
-  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
-  const clip = project.clips.find(({ id }) => id === clipId);
-  if (!clip) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
-  const moved = placeClip(
-    project,
-    clipId,
-    Math.max(0, clip.timelineStartMs - clipDurationMs(clip)),
-    clip.trackId,
-    updatedAt,
-  );
-  if (moved.clips.find(({ id }) => id === clipId)?.timelineStartMs === clip.timelineStartMs) {
-    throw new DomainError('MOVE_OUT_OF_BOUNDS', 'Clip cannot move earlier.');
-  }
-  return moved;
+  return reorderClip(project, clipId, 0, updatedAt);
 }
 
-export function moveClipLater(
-  projectInput: SnapCutProject,
+/** Kept for callers that still use the old helper name; v7 simply reorders. */
+export function moveClipToEnd(
+  project: SnapCutProject,
   clipId: string,
-  updatedAt = projectInput.updatedAt,
+  _trackId?: TrackId,
+  updatedAt = project.updatedAt,
 ): SnapCutProject {
-  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
-  const clip = project.clips.find(({ id }) => id === clipId);
-  if (!clip) throw new DomainError('CLIP_NOT_FOUND', `Clip does not exist: ${clipId}`);
-  return placeClip(project, clipId, clipTimelineEndMs(clip), clip.trackId, updatedAt);
+  return reorderClip(project, clipId, project.clips.length - 1, updatedAt);
+}
+
+/** Timeline placement no longer exists; use array reordering in v7. */
+export function placeClip(
+  project: SnapCutProject,
+  clipId: string,
+  destinationIndex: number,
+  _trackId?: TrackId,
+  updatedAt = project.updatedAt,
+): SnapCutProject {
+  return reorderClip(project, clipId, destinationIndex, updatedAt);
+}
+
+/** Legacy pure helper retained for native compatibility; v7 does not persist fades. */
+export function fitFadeDurationMs(fadeMs: number, durationMs: number): FadeDurationMs {
+  return (
+    [...FADE_DURATION_VALUES_MS]
+      .reverse()
+      .find((value) => value <= fadeMs && value <= durationMs) ?? 0
+  );
 }

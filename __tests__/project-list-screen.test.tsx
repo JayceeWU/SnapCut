@@ -1,6 +1,7 @@
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, waitFor, within } from '@testing-library/react-native';
 
 import ProjectListScreen from '../app/index';
+import { copy } from '@/constants';
 import type { SnapCutProject } from '@/domain';
 import { configureProjectRepository, type ProjectRepositoryPort, useProjectStore } from '@/stores';
 
@@ -12,8 +13,7 @@ jest.mock('expo-router', () => ({
 
 function automaticProject(): SnapCutProject {
   return {
-    schemaVersion: 6,
-    trackCount: 2,
+    schemaVersion: 7,
     id: '11111111-1111-4111-8111-111111111111',
     name: '2026-08-13 14-30-25',
     namePromptCompleted: false,
@@ -25,7 +25,10 @@ function automaticProject(): SnapCutProject {
   };
 }
 
-function repository(create: ProjectRepositoryPort['create']): ProjectRepositoryPort {
+function repository(
+  create: ProjectRepositoryPort['create'],
+  overrides: Partial<ProjectRepositoryPort> = {},
+): ProjectRepositoryPort {
   return {
     initialize: jest.fn(),
     list: jest.fn(() => []),
@@ -34,6 +37,7 @@ function repository(create: ProjectRepositoryPort['create']): ProjectRepositoryP
     save: jest.fn((project: SnapCutProject) => project),
     rename: jest.fn(),
     delete: jest.fn(),
+    ...overrides,
   };
 }
 
@@ -98,5 +102,50 @@ describe('project list automatic creation', () => {
     await waitFor(() => expect(screen.getByText('The project could not be created.')).toBeTruthy());
     expect(screen.getAllByRole('button', { name: 'New Project' })[0]).toBeEnabled();
     expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('keeps a failed rename visible inside the rename dialog', async () => {
+    const project = automaticProject();
+    configureProjectRepository(
+      repository(jest.fn(), {
+        list: jest.fn(() => [project]),
+        rename: jest.fn(async () => {
+          throw new Error('private failure');
+        }),
+      }),
+    );
+    const screen = await render(<ProjectListScreen />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Rename' })).toBeTruthy());
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Rename' }));
+    await fireEvent.changeText(screen.getByLabelText(copy.nameDialog.fieldLabel), 'New name');
+    await fireEvent.press(screen.getByRole('button', { name: copy.nameDialog.saveAction }));
+
+    const dialog = screen.getByTestId('project-name-dialog');
+    await waitFor(() => expect(within(dialog).getByText(copy.projects.renameError)).toBeTruthy());
+    expect(within(dialog).getByRole('alert')).toBeTruthy();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+  });
+
+  it('keeps a failed delete visible inside the delete dialog', async () => {
+    const project = automaticProject();
+    configureProjectRepository(
+      repository(jest.fn(), {
+        list: jest.fn(() => [project]),
+        delete: jest.fn(async () => {
+          throw new Error('private failure');
+        }),
+      }),
+    );
+    const screen = await render(<ProjectListScreen />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy());
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
+    await fireEvent.press(screen.getByRole('button', { name: copy.deleteDialog.confirmAction }));
+
+    const dialog = screen.getByTestId('confirm-delete-dialog');
+    await waitFor(() => expect(within(dialog).getByText(copy.projects.deleteError)).toBeTruthy());
+    expect(within(dialog).getByRole('alert')).toBeTruthy();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
   });
 });

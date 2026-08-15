@@ -1,6 +1,6 @@
-export const CURRENT_PROJECT_SCHEMA_VERSION = 6 as const;
+export const CURRENT_PROJECT_SCHEMA_VERSION = 7 as const;
 export const PROJECT_INDEX_SCHEMA_VERSION = 1 as const;
-export const SOURCE_FILE_SCHEMA_VERSION = 1 as const;
+export const SOURCE_FILE_SCHEMA_VERSION = 2 as const;
 export const WAVEFORM_SCHEMA_VERSION = 1 as const;
 
 export const DEFAULT_PROJECT_NAME = 'Untitled Project';

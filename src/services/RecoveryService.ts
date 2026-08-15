@@ -14,6 +14,8 @@ import {
 import {
   INDEX_FILE_NAME,
   PROJECT_FILE_NAME,
+  SOURCE_DELETE_DIRECTORY_PREFIX,
+  SOURCE_DELETE_JOURNAL_SUFFIX,
   SOURCE_METADATA_FILE_NAME,
   TRANSACTION_DIRECTORY_PREFIX,
   TRANSACTION_JOURNAL_SUFFIX,
@@ -22,6 +24,7 @@ import {
   storageLayout,
 } from '@/repositories/StorageLayout';
 import type { StorageEntry } from '@/repositories/StorageFileSystem';
+import { sourceDeletionJournalSchema } from '@/repositories/SourceDeletionTransaction';
 
 export const STALE_TRANSACTION_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -36,7 +39,8 @@ export type ProjectRepairIssue =
   | 'WAVEFORM_MISSING'
   | 'WAVEFORM_INVALID'
   | 'WAVEFORM_DURATION_MISMATCH'
-  | 'INCOMPLETE_IMPORT_TRANSACTION';
+  | 'INCOMPLETE_IMPORT_TRANSACTION'
+  | 'INCOMPLETE_SOURCE_DELETE_TRANSACTION';
 
 export interface ProjectRepairStatus {
   readonly state: 'ready' | 'needs-repair';
@@ -151,6 +155,9 @@ export class RecoveryService {
   async inspectProject(project: SnapCutProject): Promise<ProjectRepairStatus> {
     const issues = new Set<ProjectRepairIssue>();
     const projectDirectory = this.layout.projectDirectoryUri(project.id);
+    if (!(await this.recoverSourceDeletionTransactions(project))) {
+      issues.add('INCOMPLETE_SOURCE_DELETE_TRANSACTION');
+    }
     for (const source of project.sources) {
       const sourceDirectory = this.layout.sourceDirectoryUri(project.id, source.id);
       if (!this.layout.fileSystem.directoryExists(sourceDirectory)) {
@@ -237,6 +244,77 @@ export class RecoveryService {
       }
     }
     return repairStatus([...issues]);
+  }
+
+  private async recoverSourceDeletionTransactions(project: SnapCutProject): Promise<boolean> {
+    let recovered = true;
+    const projectDirectory = this.layout.projectDirectoryUri(project.id);
+    const entries = this.safeList(projectDirectory).filter(
+      (entry) =>
+        entry.name.startsWith(SOURCE_DELETE_DIRECTORY_PREFIX) &&
+        entry.name.endsWith(SOURCE_DELETE_JOURNAL_SUFFIX),
+    );
+    for (const entry of entries) {
+      const fileJobId = this.layout.sourceDeleteJobIdFromJournalFileName(entry.name);
+      if (
+        entry.kind !== 'file' ||
+        fileJobId === null ||
+        entry.uri !== this.layout.projectSourceDeleteJournalUri(project.id, fileJobId)
+      ) {
+        recovered = false;
+        continue;
+      }
+      const journal = await this.json.read(entry.uri, (raw) =>
+        sourceDeletionJournalSchema.parse(raw),
+      );
+      if (journal === null || journal.projectId !== project.id || journal.jobId !== fileJobId) {
+        recovered = false;
+        continue;
+      }
+      const sourceDirectory = this.layout.sourceDirectoryUri(project.id, journal.sourceId);
+      const deletionDirectory = this.layout.sourceDeleteDirectoryUri(fileJobId);
+      if (!this.layout.isSourceDeleteDirectoryUri(deletionDirectory)) {
+        recovered = false;
+        continue;
+      }
+      const sourceReferenced = project.sources.some(({ id }) => id === journal.sourceId);
+      try {
+        if (sourceReferenced) {
+          if (
+            !this.layout.fileSystem.directoryExists(sourceDirectory) &&
+            this.layout.fileSystem.directoryExists(deletionDirectory)
+          ) {
+            await this.layout.fileSystem.moveDirectory(deletionDirectory, sourceDirectory);
+          }
+          if (
+            !this.layout.fileSystem.directoryExists(sourceDirectory) ||
+            this.layout.fileSystem.directoryExists(deletionDirectory)
+          ) {
+            recovered = false;
+            continue;
+          }
+        } else {
+          if (this.layout.fileSystem.directoryExists(sourceDirectory)) {
+            this.layout.fileSystem.deleteDirectory(sourceDirectory);
+          }
+          if (this.layout.fileSystem.directoryExists(deletionDirectory)) {
+            this.layout.fileSystem.deleteDirectory(deletionDirectory);
+          }
+          if (
+            this.layout.fileSystem.directoryExists(sourceDirectory) ||
+            this.layout.fileSystem.directoryExists(deletionDirectory)
+          ) {
+            recovered = false;
+            continue;
+          }
+        }
+        this.layout.fileSystem.deleteFile(entry.uri);
+        if (this.layout.fileSystem.fileExists(entry.uri)) recovered = false;
+      } catch {
+        recovered = false;
+      }
+    }
+    return recovered;
   }
 
   async recoverJson<T>(

@@ -5,37 +5,31 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
-  ClipInlineAdjustment,
+  ClipEditModal,
+  CompositionWaveform,
   EmptyState,
   ErrorBanner,
   ExportModal,
   ImportProgressModal,
-  LiveClipActionRail,
   MediaLibraryModal,
   PlaybackControls,
   ProjectNameModal,
-  ProjectTimeline,
-  TimelineOverview,
-  acknowledgedCompositionPausePosition,
-  editorWorkspaceLayout,
+  SequentialClipList,
+  SourceNameModal,
+  type ClipRangeDraft,
 } from '@/components';
 import { colors, copy, layout, minimumTouchTarget, radii, spacing, typography } from '@/constants';
 import {
-  addFullSourceClip,
+  addClip,
   completeProjectNamePrompt,
   compositionDurationMs,
   deleteClip,
-  placeClip,
+  reorderClip,
   shouldPromptForProjectName,
-  splitClip,
-  trimClipEdge,
   updateClip,
-  type ClipTrimEdge,
-  type FadeDurationMs,
   type SnapCutClip,
   type SnapCutProject,
   type SnapCutSource,
-  type TrackId,
 } from '@/domain';
 import {
   cancelActiveImportRuntime,
@@ -45,24 +39,18 @@ import {
 } from '@/services';
 import {
   resetImportStore,
+  useClipEditHistoryStore,
   useEditorStore,
   useExportStore,
   useImportStore,
   usePlaybackStore,
   useProjectStore,
   useWaveformJobStore,
-  useClipEditHistoryStore,
 } from '@/stores';
-import { canSplitClipAtTimelinePosition, projectContainsCommittedSourceClip } from '@/utils';
 
 function getRouteId(id: string | string[] | undefined): string | null {
   if (typeof id === 'string' && id.length > 0) return id;
   return Array.isArray(id) && id[0] ? id[0] : null;
-}
-
-function sourceForClip(project: SnapCutProject, clip: SnapCutClip | null): SnapCutSource | null {
-  if (!clip) return null;
-  return project.sources.find(({ id }) => id === clip.sourceId) ?? null;
 }
 
 function useLiveCompositionCursor(projectId: string, fallbackCursorMs: number): number {
@@ -75,28 +63,16 @@ function useLiveCompositionCursor(projectId: string, fallbackCursorMs: number): 
   );
 }
 
-function LiveProjectTimeline({
+function LiveCompositionWaveform({
   projectId,
   fallbackCursorMs,
   ...props
-}: Omit<ComponentProps<typeof ProjectTimeline>, 'cursorMs'> & {
+}: Omit<ComponentProps<typeof CompositionWaveform>, 'cursorMs'> & {
   projectId: string;
   fallbackCursorMs: number;
 }) {
   const cursorMs = useLiveCompositionCursor(projectId, fallbackCursorMs);
-  return <ProjectTimeline {...props} cursorMs={cursorMs} />;
-}
-
-function LiveTimelineOverview({
-  projectId,
-  fallbackCursorMs,
-  ...props
-}: Omit<ComponentProps<typeof TimelineOverview>, 'cursorMs'> & {
-  projectId: string;
-  fallbackCursorMs: number;
-}) {
-  const cursorMs = useLiveCompositionCursor(projectId, fallbackCursorMs);
-  return <TimelineOverview {...props} cursorMs={cursorMs} />;
+  return <CompositionWaveform {...props} cursorMs={cursorMs} />;
 }
 
 function LivePlaybackControls({
@@ -134,6 +110,14 @@ function LivePlaybackControls({
   );
 }
 
+type ClipEditorState =
+  { mode: 'add'; sourceId: string | null } | { mode: 'edit'; clipId: string } | null;
+
+type SourceNameEditorState = {
+  sourceId: string;
+  reason: 'import' | 'rename';
+} | null;
+
 export default function ProjectEditorScreen() {
   const params = useLocalSearchParams<{ id: string | string[] }>();
   const projectId = getRouteId(params.id);
@@ -148,19 +132,14 @@ export default function ProjectEditorScreen() {
   const clearActiveProject = useProjectStore((state) => state.clearActiveProject);
   const clearError = useProjectStore((state) => state.clearError);
   const renameProject = useProjectStore((state) => state.renameProject);
+  const renameSource = useProjectStore((state) => state.renameSource);
+  const deleteSource = useProjectStore((state) => state.deleteSource);
   const updateProject = useProjectStore((state) => state.updateProject);
 
-  const selectedTrackId = useEditorStore((state) => state.selectedTrackId);
-  const selectedClipId = useEditorStore((state) => state.editingClipId);
   const waveformsBySourceId = useEditorStore((state) => state.waveformsBySourceId);
   const timelineCursorMs = useEditorStore((state) => state.timelineCursorMs);
-  const timelineVisibleSpanMs = useEditorStore((state) => state.timelineVisibleSpanMs);
   const syncEditorProject = useEditorStore((state) => state.syncProject);
-  const selectTrack = useEditorStore((state) => state.selectTrack);
-  const beginEditing = useEditorStore((state) => state.beginEditing);
-  const cancelEditing = useEditorStore((state) => state.cancelEditing);
   const setTimelineCursorMs = useEditorStore((state) => state.setTimelineCursorMs);
-  const setTimelineNavigation = useEditorStore((state) => state.setTimelineNavigation);
   const resetEditor = useEditorStore((state) => state.reset);
   const waveformRevision = useWaveformJobStore((state) =>
     Object.values(state.jobs)
@@ -174,11 +153,8 @@ export default function ProjectEditorScreen() {
   const playbackProjectId = usePlaybackStore((state) => state.projectId);
   const playbackMode = usePlaybackStore((state) => state.mode);
   const playbackLoading = usePlaybackStore((state) => state.loading);
-  const playbackLoaded = usePlaybackStore((state) => state.loaded);
   const playbackPlaying = usePlaybackStore((state) => state.playing);
   const playbackDesiredPlaying = usePlaybackStore((state) => state.desiredPlaying);
-  const playbackPausePending = usePlaybackStore((state) => state.pausePending);
-  const playbackControlRevision = usePlaybackStore((state) => state.controlRevision);
   const playbackCurrentClipId = usePlaybackStore((state) => state.currentClipId);
   const playbackError = usePlaybackStore((state) => state.error);
   const clearPlaybackError = usePlaybackStore((state) => state.clearError);
@@ -193,18 +169,13 @@ export default function ProjectEditorScreen() {
   const [showImport, setShowImport] = useState(false);
   const [importReloadFailed, setImportReloadFailed] = useState(false);
   const [showMedia, setShowMedia] = useState(false);
-  const [activeAdjustment, setActiveAdjustment] = useState<'volume' | 'fade' | null>(null);
+  const [clipEditor, setClipEditor] = useState<ClipEditorState>(null);
+  const [sourceNameEditor, setSourceNameEditor] = useState<SourceNameEditorState>(null);
   const [requestedPreviewSourceId, setRequestedPreviewSourceId] = useState<string | null>(null);
+  const [deletingSourceId, setDeletingSourceId] = useState<string | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
   const historyCommandLocked = useRef(false);
-  const timelineInteractionRevision = useRef(0);
-  const playbackStartInteractionRevision = useRef(0);
-  const pendingPauseAcknowledgement = useRef<{
-    interactionRevision: number;
-    controlRevision: number;
-  } | null>(null);
-  const preImportProject = useRef<SnapCutProject | null>(null);
-  const recordedImportSourceId = useRef<string | null>(null);
+
   const exportStatus = useExportStore((state) => state.status);
   const exportResult = useExportStore((state) => state.result);
   const importActive = useImportStore((state) => state.activeJobId !== null);
@@ -239,48 +210,22 @@ export default function ProjectEditorScreen() {
       !project ||
       project.id !== projectId ||
       playbackProjectId !== project.id ||
-      playbackMode !== 'composition'
+      playbackMode !== 'composition' ||
+      playbackDesiredPlaying
     ) {
       return;
     }
-    if (playbackDesiredPlaying) {
-      playbackStartInteractionRevision.current = timelineInteractionRevision.current;
-      return;
-    }
-    if (!playbackLoaded) return;
-    if (timelineInteractionRevision.current !== playbackStartInteractionRevision.current) return;
-    setTimelineCursorMs(
-      usePlaybackStore.getState().positionMs,
-      compositionDurationMs(project.clips),
-    );
+    const playback = usePlaybackStore.getState();
+    if (!playback.loaded) return;
+    setTimelineCursorMs(playback.positionMs, compositionDurationMs(project.clips));
   }, [
     playbackDesiredPlaying,
-    playbackLoaded,
     playbackMode,
     playbackProjectId,
     project,
     projectId,
     setTimelineCursorMs,
   ]);
-
-  useEffect(() => {
-    const pending = pendingPauseAcknowledgement.current;
-    if (!pending || playbackPausePending || playbackControlRevision < pending.controlRevision) {
-      return;
-    }
-    pendingPauseAcknowledgement.current = null;
-    if (!project || project.id !== projectId) return;
-    const acknowledgedPositionMs = acknowledgedCompositionPausePosition(
-      pending.interactionRevision,
-      timelineInteractionRevision.current,
-      pending.controlRevision,
-      project.id,
-      usePlaybackStore.getState(),
-    );
-    if (acknowledgedPositionMs !== null) {
-      setTimelineCursorMs(acknowledgedPositionMs, compositionDurationMs(project.clips));
-    }
-  }, [playbackControlRevision, playbackPausePending, project, projectId, setTimelineCursorMs]);
 
   if (loading && !project) {
     return (
@@ -306,16 +251,24 @@ export default function ProjectEditorScreen() {
   }
 
   const durationMs = compositionDurationMs(project.clips);
-  const selectedClip = project.clips.find(({ id }) => id === selectedClipId) ?? null;
   const saving = mutation === 'save';
+  const editorBusy = saving || historyBusy || importActive;
   const activePlaybackMode = playbackProjectId === project.id ? playbackMode : null;
-  const activePlaybackLoading = playbackProjectId === project.id && playbackLoading;
-  const activePlaybackPlaying = playbackProjectId === project.id && playbackPlaying;
-  const timelinePlayheadMs = timelineCursorMs;
   const activePreviewSourceId =
     activePlaybackMode === 'selection'
       ? (requestedPreviewSourceId ?? playbackCurrentClipId)
       : requestedPreviewSourceId;
+  const editingClip =
+    clipEditor?.mode === 'edit'
+      ? (project.clips.find(({ id }) => id === clipEditor.clipId) ?? null)
+      : null;
+  const namingSource = project.sources.find(({ id }) => id === sourceNameEditor?.sourceId) ?? null;
+  const inUseSourceIds = new Set(project.clips.map(({ sourceId }) => sourceId));
+
+  const clearOperationErrors = () => {
+    clearError();
+    clearPlaybackError();
+  };
 
   const openExport = (projectToExport: SnapCutProject) => {
     setShowExport(true);
@@ -323,6 +276,7 @@ export default function ProjectEditorScreen() {
   };
 
   const prepareExport = () => {
+    clearOperationErrors();
     if (shouldPromptForProjectName(project)) {
       setRenameReason('first-export');
       return;
@@ -330,17 +284,14 @@ export default function ProjectEditorScreen() {
     openExport(project);
   };
 
-  const submitRename = async (name: string) => {
-    const reason = renameReason;
+  const submitProjectRename = async (name: string) => {
     if (!(await renameProject(project.id, name))) return;
     setRenameReason(null);
-    if (reason === 'first-export') {
-      const renamed = useProjectStore.getState().activeProject;
-      if (renamed?.id === project.id) openExport(renamed);
-    }
+    const renamed = useProjectStore.getState().activeProject;
+    if (renamed?.id === project.id) openExport(renamed);
   };
 
-  const cancelRename = async () => {
+  const cancelProjectRename = async () => {
     const saved = await updateProject(project.id, completeProjectNamePrompt);
     if (!saved) return;
     setRenameReason(null);
@@ -362,6 +313,30 @@ export default function ProjectEditorScreen() {
     exportCoordinator.reset();
   };
 
+  const stopSourcePreview = async (): Promise<boolean> => {
+    const playback = usePlaybackStore.getState();
+    setRequestedPreviewSourceId(null);
+    if (playback.projectId === project.id && playback.mode === 'selection') {
+      try {
+        await previewCoordinator.releaseProject(project.id);
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const pauseForInteraction = () => {
+    const playback = usePlaybackStore.getState();
+    if (playback.projectId !== project.id) return;
+    if (playback.mode === 'composition') {
+      setTimelineCursorMs(playback.positionMs, durationMs);
+      void previewCoordinator.pauseComposition().catch(() => undefined);
+    } else if (playback.desiredPlaying || playback.playing || playback.loading) {
+      void previewCoordinator.pause().catch(() => undefined);
+    }
+  };
+
   const saveClipEdit = async (
     edit: (current: SnapCutProject) => SnapCutProject,
   ): Promise<SnapCutProject | null> => {
@@ -376,6 +351,12 @@ export default function ProjectEditorScreen() {
         return edit(current);
       });
       if (saved && before) useClipEditHistoryStore.getState().record(before);
+      if (saved) {
+        setTimelineCursorMs(
+          Math.min(useEditorStore.getState().timelineCursorMs, compositionDurationMs(saved.clips)),
+          compositionDurationMs(saved.clips),
+        );
+      }
       return saved;
     } catch {
       return null;
@@ -385,74 +366,86 @@ export default function ProjectEditorScreen() {
     }
   };
 
-  const stopSourcePreview = async () => {
+  const runHistoryCommand = async (direction: 'undo' | 'redo') => {
+    if (historyCommandLocked.current || importActive) return;
+    historyCommandLocked.current = true;
+    setHistoryBusy(true);
+    let before: SnapCutProject | null = null;
+    const history = useClipEditHistoryStore.getState();
+    try {
+      await previewCoordinator.releaseProject(project.id);
+      const saved = await updateProject(project.id, (current) => {
+        before = current;
+        return direction === 'undo' ? history.previewUndo(current) : history.previewRedo(current);
+      });
+      if (saved && before) {
+        if (direction === 'undo') history.commitUndo(before);
+        else history.commitRedo(before);
+      }
+    } catch {
+      // Preview/project stores already expose the stable operation error. The
+      // button handlers intentionally fire-and-forget this command, so absorb
+      // the rejection here instead of producing an unhandled Debug RedBox.
+    } finally {
+      historyCommandLocked.current = false;
+      setHistoryBusy(false);
+    }
+  };
+
+  const changeCompositionCursor = (positionMs: number) => {
+    setTimelineCursorMs(positionMs, durationMs);
+  };
+
+  const finishCompositionCursor = (positionMs: number) => {
+    setTimelineCursorMs(positionMs, durationMs);
     const playback = usePlaybackStore.getState();
-    setRequestedPreviewSourceId(null);
-    if (playback.projectId === project.id && playback.mode === 'selection') {
-      await previewCoordinator.releaseProject(project.id).catch(() => undefined);
+    if (playback.projectId === project.id && playback.mode === 'composition' && playback.loaded) {
+      void previewCoordinator.seek(positionMs, false).catch(() => undefined);
     }
   };
 
   const closeMedia = () => {
     setShowMedia(false);
+    clearOperationErrors();
     void stopSourcePreview();
+  };
+
+  const openMedia = () => {
+    clearOperationErrors();
+    setShowMedia(true);
   };
 
   const importMedia = () => {
     if (historyCommandLocked.current || importActive) return;
+    clearError();
     historyCommandLocked.current = true;
     setHistoryBusy(true);
     void (async () => {
-      try {
-        await previewCoordinator.releaseProject(project.id);
-      } catch {
-        return;
-      }
-      const runtime = getImportRuntime();
-      preImportProject.current = project;
-      recordedImportSourceId.current = null;
+      await previewCoordinator.releaseProject(project.id);
       setRequestedPreviewSourceId(null);
       setShowMedia(false);
       setImportReloadFailed(false);
       setShowImport(true);
-      const outcome = await runtime.coordinator.importIntoProject(project.id, 'track-1');
+      const runtime = getImportRuntime();
+      const outcome = await runtime.coordinator.importIntoProject(project.id);
       if (outcome.status === 'cancelled') {
-        preImportProject.current = null;
         setShowImport(false);
         resetImportStore();
         return;
       }
       if (outcome.status !== 'imported') return;
-      const reloadCommittedProject = async () => {
-        await loadProject(project.id);
-        const refreshed = useProjectStore.getState().activeProject;
-        const committed =
-          refreshed?.id === project.id &&
-          projectContainsCommittedSourceClip(refreshed, outcome.sourceId);
-        if (
-          committed &&
-          preImportProject.current &&
-          recordedImportSourceId.current !== outcome.sourceId
-        ) {
-          useClipEditHistoryStore.getState().record(preImportProject.current);
-          recordedImportSourceId.current = outcome.sourceId;
-          preImportProject.current = null;
-        }
-        return committed;
-      };
-      if (await reloadCommittedProject()) {
+      await loadProject(project.id);
+      const refreshed = useProjectStore.getState().activeProject;
+      const importedSource = refreshed?.sources.find(({ id }) => id === outcome.sourceId);
+      if (refreshed?.id === project.id && importedSource) {
         setShowImport(false);
+        setShowMedia(true);
+        setSourceNameEditor({ sourceId: importedSource.id, reason: 'import' });
         resetImportStore();
       } else {
         setImportReloadFailed(true);
       }
-      void runtime.waveformScheduler.whenIdle().then(async () => {
-        if (await reloadCommittedProject()) {
-          setShowImport(false);
-          setImportReloadFailed(false);
-          resetImportStore();
-        }
-      });
+      void runtime.waveformScheduler.whenIdle().then(() => loadProject(project.id));
     })()
       .catch(() => undefined)
       .finally(() => {
@@ -475,169 +468,83 @@ export default function ProjectEditorScreen() {
     });
   };
 
-  const addFullSource = (source: SnapCutSource) => {
-    const clipId = randomUUID();
-    void stopSourcePreview().then(() =>
-      saveClipEdit((current) => addFullSourceClip(current, source.id, clipId, 'track-1')).then(
-        (saved) => {
-          if (saved) setShowMedia(false);
-        },
-      ),
-    );
+  const openAddClip = (sourceId: string | null = project.sources[0]?.id ?? null) => {
+    clearOperationErrors();
+    if (project.sources.length === 0) {
+      setShowMedia(true);
+      return;
+    }
+    void stopSourcePreview();
+    setShowMedia(false);
+    setClipEditor({ mode: 'add', sourceId });
   };
 
-  const selectTimelineClip = (clipId: string) => {
-    const clip = project.clips.find(({ id }) => id === clipId);
-    const source = sourceForClip(project, clip ?? null);
-    if (!clip || !source) return;
-    if (clipId !== selectedClipId) setActiveAdjustment(null);
-    beginEditing(clip, source);
-    selectTrack(clip.trackId);
-  };
-
-  const deleteSelectedClip = (clipId: string) => {
-    void saveClipEdit((current) => deleteClip(current, clipId)).then((saved) => {
-      if (!saved) return;
-      cancelEditing();
+  const saveClipModal = (draft: ClipRangeDraft) => {
+    const state = clipEditor;
+    if (!state) return;
+    const updatedAt = new Date().toISOString();
+    const edit =
+      state.mode === 'add'
+        ? (current: SnapCutProject) => addClip(current, { id: randomUUID(), ...draft }, updatedAt)
+        : (current: SnapCutProject) => updateClip(current, state.clipId, draft, updatedAt);
+    void saveClipEdit(edit).then((saved) => {
+      if (saved) setClipEditor(null);
     });
   };
 
-  const splitSelectedClip = (clipId: string, timelinePositionMs: number) => {
-    const clip = project.clips.find(({ id }) => id === clipId);
-    if (!clip || !canSplitClipAtTimelinePosition(clip, timelinePositionMs)) return;
-    const sourceSplitMs = clip.startMs + timelinePositionMs - clip.timelineStartMs;
-    void saveClipEdit((current) => splitClip(current, clipId, sourceSplitMs, randomUUID()));
-  };
-
-  const moveTimelineClip = (
-    clipId: string,
-    trackId: TrackId,
-    timelineStartMs: number,
-  ): Promise<SnapCutProject | null> =>
-    saveClipEdit((current) => placeClip(current, clipId, timelineStartMs, trackId));
-
-  const trimTimelineClip = (
-    clipId: string,
-    edge: ClipTrimEdge,
-    requestedSourceMs: number,
-  ): Promise<SnapCutProject | null> =>
-    saveClipEdit((current) => trimClipEdge(current, clipId, edge, requestedSourceMs));
-
-  const saveVolume = async (gain: number): Promise<boolean> => {
-    if (!selectedClip) return false;
-    return (
-      (await saveClipEdit((current) => updateClip(current, selectedClip.id, { gain }))) !== null
+  const deleteEditedClip = () => {
+    if (clipEditor?.mode !== 'edit') return;
+    const clipId = clipEditor.clipId;
+    void saveClipEdit((current) => deleteClip(current, clipId, new Date().toISOString())).then(
+      (saved) => {
+        if (saved) setClipEditor(null);
+      },
     );
   };
 
-  const saveFades = async (
-    fadeInMs: FadeDurationMs,
-    fadeOutMs: FadeDurationMs,
-  ): Promise<boolean> => {
-    if (!selectedClip) return false;
-    return (
-      (await saveClipEdit((current) =>
-        updateClip(current, selectedClip.id, { fadeInMs, fadeOutMs }),
-      )) !== null
-    );
-  };
-
-  const runHistoryCommand = async (direction: 'undo' | 'redo') => {
-    if (historyCommandLocked.current) return;
-    historyCommandLocked.current = true;
-    setHistoryBusy(true);
-    let before: SnapCutProject | null = null;
-    const history = useClipEditHistoryStore.getState();
-    try {
-      await previewCoordinator.releaseProject(project.id);
-      const saved = await updateProject(project.id, (current) => {
-        before = current;
-        return direction === 'undo' ? history.previewUndo(current) : history.previewRedo(current);
-      });
-      if (saved && before) {
-        if (direction === 'undo') history.commitUndo(before);
-        else history.commitRedo(before);
-      }
-    } catch {
-      // PreviewCoordinator already exposes a safe, user-facing playback error.
-    } finally {
-      historyCommandLocked.current = false;
-      setHistoryBusy(false);
-    }
-  };
-
-  const pauseForInteraction = () => {
-    const playback = usePlaybackStore.getState();
-    if (playback.projectId !== project.id) return;
-    if (playback.mode === 'composition') {
-      const requestedInteractionRevision = ++timelineInteractionRevision.current;
-      setTimelineCursorMs(playback.positionMs, durationMs);
-      const pausePromise = previewCoordinator.pauseComposition();
-      const requestedControlRevision = usePlaybackStore.getState().controlRevision;
-      pendingPauseAcknowledgement.current = {
-        interactionRevision: requestedInteractionRevision,
-        controlRevision: requestedControlRevision,
-      };
-      void pausePromise.catch(() => {
-        if (pendingPauseAcknowledgement.current?.controlRevision === requestedControlRevision) {
-          pendingPauseAcknowledgement.current = null;
-        }
-      });
-      return;
-    }
-    if (playback.desiredPlaying || playback.playing || playback.loading) {
-      void previewCoordinator.pause().catch(() => undefined);
-    }
-  };
-
-  const changeTimelineScrub = (positionMs: number) => {
-    timelineInteractionRevision.current += 1;
-    setTimelineCursorMs(positionMs, durationMs);
-  };
-
-  const finishTimelineScrub = (positionMs: number) => {
-    timelineInteractionRevision.current += 1;
-    setTimelineCursorMs(positionMs, durationMs);
-    const playback = usePlaybackStore.getState();
-    if (playback.projectId === project.id && playback.mode === 'composition' && playback.loaded) {
-      void previewCoordinator.seek(positionMs, false).catch(() => undefined);
-    }
-  };
-
-  const changeOverviewNavigation = (cursorMs: number, visibleSpanMs: number) => {
-    timelineInteractionRevision.current += 1;
-    setTimelineNavigation(cursorMs, visibleSpanMs, durationMs);
-  };
-
-  const finishOverviewChange = (cursorMs: number, visibleSpanMs: number) => {
-    timelineInteractionRevision.current += 1;
-    setTimelineNavigation(cursorMs, visibleSpanMs, durationMs);
-    const playback = usePlaybackStore.getState();
-    if (playback.projectId === project.id && playback.mode === 'composition' && playback.loaded) {
-      void previewCoordinator.seek(cursorMs, false).catch(() => undefined);
-    }
-  };
-
-  const splitAtCurrentCursor = () => {
-    if (!selectedClip) return;
-    const playback = usePlaybackStore.getState();
-    const positionMs =
-      playback.projectId === project.id &&
-      playback.mode === 'composition' &&
-      (playback.desiredPlaying || playback.playing)
-        ? playback.positionMs
-        : useEditorStore.getState().timelineCursorMs;
+  const reorderSequentialClip = (clipId: string, destinationIndex: number) => {
     pauseForInteraction();
-    setActiveAdjustment(null);
-    splitSelectedClip(selectedClip.id, positionMs);
+    void saveClipEdit((current) =>
+      reorderClip(current, clipId, destinationIndex, new Date().toISOString()),
+    );
   };
 
-  const editorError =
-    playbackError && playbackProjectId === project.id
-      ? { message: playbackError, onDismiss: clearPlaybackError }
+  const submitSourceName = (name: string) => {
+    if (!sourceNameEditor) return;
+    const { sourceId } = sourceNameEditor;
+    void (async () => {
+      if (!(await stopSourcePreview())) return;
+      if (await renameSource(project.id, sourceId, name)) setSourceNameEditor(null);
+    })();
+  };
+
+  const removeSource = (source: SnapCutSource) => {
+    setDeletingSourceId(source.id);
+    void (async () => {
+      if (!(await stopSourcePreview())) return;
+      const deleted = await deleteSource(project.id, source.id);
+      if (!deleted) return;
+      useClipEditHistoryStore.getState().clearProjectHistory(project.id);
+      if (sourceNameEditor?.sourceId === source.id) setSourceNameEditor(null);
+    })().finally(() => setDeletingSourceId(null));
+  };
+
+  // Opening Media clears stale playback errors first. If native preview fails
+  // before beginSession assigns a project id, the resulting error still belongs
+  // to this visible Media operation.
+  const currentPlaybackError =
+    playbackError && (playbackProjectId === project.id || showMedia) ? playbackError : null;
+  const modalOperationError = currentPlaybackError ?? error;
+  const dismissModalOperationError = currentPlaybackError ? clearPlaybackError : clearError;
+  const nativeOperationModalActive =
+    showMedia || clipEditor !== null || namingSource !== null || renameReason !== null;
+  const editorError = !nativeOperationModalActive
+    ? currentPlaybackError
+      ? { message: currentPlaybackError, onDismiss: clearPlaybackError }
       : error
         ? { message: error, onDismiss: clearError }
-        : null;
+        : null
+    : null;
 
   return (
     <SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={styles.safeArea}>
@@ -649,9 +556,6 @@ export default function ProjectEditorScreen() {
             onPress={() => router.back()}
             style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
           >
-            <Text accessibilityElementsHidden style={styles.hiddenBackIcon}>
-              ‹
-            </Text>
             <Text accessibilityElementsHidden style={styles.backIcon}>
               {'\u2039'}
             </Text>
@@ -660,15 +564,15 @@ export default function ProjectEditorScreen() {
             {project.name}
           </Text>
           <Pressable
-            accessibilityLabel="Add media"
+            accessibilityLabel={copy.editor.addMediaAction}
             accessibilityRole="button"
-            accessibilityState={{ disabled: saving || historyBusy || importActive }}
-            disabled={saving || historyBusy || importActive}
-            onPress={() => setShowMedia(true)}
+            accessibilityState={{ disabled: editorBusy }}
+            disabled={editorBusy}
+            onPress={openMedia}
             style={({ pressed }) => [
               styles.iconButton,
               pressed && styles.pressed,
-              (saving || historyBusy || importActive) && styles.disabledIconButton,
+              editorBusy && styles.disabledIconButton,
             ]}
             testID="open-media-library"
           >
@@ -682,16 +586,13 @@ export default function ProjectEditorScreen() {
             }
             accessibilityLabel={copy.editor.exportAction}
             accessibilityRole="button"
-            accessibilityState={{
-              disabled: project.clips.length === 0 || saving || historyBusy || importActive,
-            }}
-            disabled={project.clips.length === 0 || saving || historyBusy || importActive}
+            accessibilityState={{ disabled: project.clips.length === 0 || editorBusy }}
+            disabled={project.clips.length === 0 || editorBusy}
             onPress={prepareExport}
             style={({ pressed }) => [
               styles.iconButton,
               pressed && styles.pressed,
-              (project.clips.length === 0 || saving || historyBusy || importActive) &&
-                styles.disabledIconButton,
+              (project.clips.length === 0 || editorBusy) && styles.disabledIconButton,
             ]}
             testID="open-export"
           >
@@ -701,19 +602,31 @@ export default function ProjectEditorScreen() {
           </Pressable>
         </View>
 
+        <LiveCompositionWaveform
+          clips={project.clips}
+          disabled={editorBusy}
+          fallbackCursorMs={timelineCursorMs}
+          onScrubChange={changeCompositionCursor}
+          onScrubEnd={finishCompositionCursor}
+          onScrubStart={pauseForInteraction}
+          projectId={project.id}
+          sources={project.sources}
+          waveformsBySourceId={waveformsBySourceId}
+        />
+
         <View style={styles.transport}>
           <LivePlaybackControls
             available={previewAvailable}
-            canRedo={canRedo && !historyBusy && !saving}
-            canUndo={canUndo && !historyBusy && !saving}
+            canRedo={canRedo && !editorBusy}
+            canUndo={canUndo && !editorBusy}
             compositionAvailable={project.clips.length > 0}
-            disabled={saving || historyBusy || importActive}
+            disabled={editorBusy}
             fallbackDurationMs={durationMs}
-            fallbackPositionMs={timelinePlayheadMs}
+            fallbackPositionMs={timelineCursorMs}
             onPause={pauseForInteraction}
             onPlay={() =>
               void previewCoordinator
-                .playComposition(project, timelinePlayheadMs)
+                .playComposition(project, timelineCursorMs)
                 .catch(() => undefined)
             }
             onRedo={() => {
@@ -729,65 +642,30 @@ export default function ProjectEditorScreen() {
           />
         </View>
 
-        <LiveProjectTimeline
+        <View style={styles.clipsHeader}>
+          <Text accessibilityRole="header" style={styles.clipsTitle}>
+            Clips
+          </Text>
+          <Pressable
+            accessibilityLabel="Add clip"
+            accessibilityRole="button"
+            accessibilityState={{ disabled: editorBusy }}
+            disabled={editorBusy}
+            onPress={() => openAddClip()}
+            style={({ pressed }) => [styles.addClipButton, pressed && styles.pressed]}
+            testID="add-clip"
+          >
+            <Text style={styles.addClipLabel}>+ Clip</Text>
+          </Pressable>
+        </View>
+
+        <SequentialClipList
           clips={project.clips}
-          fallbackCursorMs={timelinePlayheadMs}
-          onEditStart={pauseForInteraction}
-          onMoveClip={moveTimelineClip}
-          onScrubChange={changeTimelineScrub}
-          onScrubEnd={finishTimelineScrub}
-          onScrubStart={pauseForInteraction}
-          onSelectClip={selectTimelineClip}
-          onSelectTrack={selectTrack}
-          onTrimClipEdge={trimTimelineClip}
-          projectId={project.id}
-          selectedClipId={selectedClipId}
-          selectedTrackId={selectedTrackId}
+          disabled={editorBusy}
+          onEdit={(clip: SnapCutClip) => setClipEditor({ mode: 'edit', clipId: clip.id })}
+          onInteractionStart={pauseForInteraction}
+          onReorder={reorderSequentialClip}
           sources={project.sources}
-          visibleSpanMs={timelineVisibleSpanMs}
-          waveformsBySourceId={waveformsBySourceId}
-        />
-
-        <LiveTimelineOverview
-          clips={project.clips}
-          disabled={saving || historyBusy || importActive}
-          durationMs={durationMs}
-          fallbackCursorMs={timelinePlayheadMs}
-          onChange={changeOverviewNavigation}
-          onChangeEnd={finishOverviewChange}
-          onInteractionStart={pauseForInteraction}
-          projectId={project.id}
-          visibleSpanMs={timelineVisibleSpanMs}
-        />
-
-        <LiveClipActionRail
-          disabled={saving || historyBusy || importActive}
-          fallbackCursorMs={timelinePlayheadMs}
-          onDelete={() => {
-            if (!selectedClip) return;
-            pauseForInteraction();
-            setActiveAdjustment(null);
-            deleteSelectedClip(selectedClip.id);
-          }}
-          onFade={() => {
-            pauseForInteraction();
-            setActiveAdjustment((current) => (current === 'fade' ? null : 'fade'));
-          }}
-          onSplit={splitAtCurrentCursor}
-          onVolume={() => {
-            pauseForInteraction();
-            setActiveAdjustment((current) => (current === 'volume' ? null : 'volume'));
-          }}
-          projectId={project.id}
-          selectedClip={selectedClip}
-        />
-        <ClipInlineAdjustment
-          busy={saving || historyBusy || importActive}
-          clip={selectedClip}
-          mode={activeAdjustment}
-          onCommitFades={saveFades}
-          onCommitVolume={saveVolume}
-          onInteractionStart={pauseForInteraction}
         />
       </View>
 
@@ -798,22 +676,61 @@ export default function ProjectEditorScreen() {
       ) : null}
 
       <MediaLibraryModal
+        deletingSourceId={deletingSourceId}
         importBusy={importActive}
-        onAddFull={addFullSource}
+        inUseSourceIds={inUseSourceIds}
+        onAddClip={(source) => openAddClip(source.id)}
         onClose={closeMedia}
+        onDelete={removeSource}
         onImport={importMedia}
         onPreview={previewSource}
-        previewLoading={activePlaybackMode === 'selection' && activePlaybackLoading}
-        previewPlaying={activePlaybackMode === 'selection' && activePlaybackPlaying}
+        onRename={(source) => {
+          clearOperationErrors();
+          setSourceNameEditor({ sourceId: source.id, reason: 'rename' });
+        }}
+        onDismissError={dismissModalOperationError}
+        operationError={namingSource === null ? modalOperationError : null}
+        previewLoading={activePlaybackMode === 'selection' && playbackLoading}
+        previewPlaying={activePlaybackMode === 'selection' && playbackPlaying}
         previewSourceId={activePreviewSourceId}
         sources={project.sources}
         visible={showMedia}
       />
+      <ClipEditModal
+        busy={editorBusy}
+        clip={editingClip}
+        initialSourceId={clipEditor?.mode === 'add' ? clipEditor.sourceId : null}
+        onCancel={() => {
+          setClipEditor(null);
+          clearOperationErrors();
+        }}
+        onDelete={editingClip ? deleteEditedClip : undefined}
+        onDismissError={dismissModalOperationError}
+        onSave={saveClipModal}
+        operationError={modalOperationError}
+        sources={project.sources}
+        visible={clipEditor !== null}
+      />
+      <SourceNameModal
+        busy={mutation === 'rename-source'}
+        initialName={namingSource?.displayName ?? ''}
+        onCancel={() => {
+          setSourceNameEditor(null);
+          clearOperationErrors();
+        }}
+        onDismissError={dismissModalOperationError}
+        onSubmit={submitSourceName}
+        operationError={modalOperationError}
+        title={sourceNameEditor?.reason === 'rename' ? 'Rename Source' : 'Name Source'}
+        visible={namingSource !== null}
+      />
       <ProjectNameModal
         busy={mutation === 'rename' || (renameReason === 'first-export' && mutation === 'save')}
         initialName={project.name}
-        onCancel={() => void cancelRename()}
-        onSubmit={(name) => void submitRename(name)}
+        onCancel={() => void cancelProjectRename()}
+        onDismissError={dismissModalOperationError}
+        onSubmit={(name) => void submitProjectRename(name)}
+        operationError={modalOperationError}
         visible={renameReason !== null}
       />
       <ExportModal
@@ -858,20 +775,20 @@ const styles = StyleSheet.create({
   content: {
     ...layout.screenContent,
     flex: 1,
-    paddingTop: editorWorkspaceLayout.contentVerticalPadding,
-    paddingBottom: editorWorkspaceLayout.contentVerticalPadding,
+    paddingTop: spacing.xxs,
+    paddingBottom: 0,
   },
   header: {
-    height: editorWorkspaceLayout.headerHeight,
+    height: 52,
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: editorWorkspaceLayout.sectionGap,
+    marginBottom: spacing.xs,
   },
   projectTitle: {
     ...typography.screenTitle,
     flex: 1,
     textAlign: 'center',
-    paddingHorizontal: spacing.xs,
+    paddingHorizontal: spacing.xxs,
   },
   iconButton: {
     width: minimumTouchTarget,
@@ -899,22 +816,42 @@ const styles = StyleSheet.create({
     fontSize: 38,
     lineHeight: 40,
   },
-  hiddenBackIcon: {
-    display: 'none',
-  },
   pressed: {
     backgroundColor: colors.accentTranslucent,
   },
   transport: {
-    ...layout.card,
-    height: editorWorkspaceLayout.transportHeight,
-    padding: spacing.xxs,
-    marginBottom: editorWorkspaceLayout.sectionGap,
+    minHeight: 52,
+    paddingHorizontal: spacing.xs,
+    marginTop: spacing.xs,
+    marginBottom: spacing.xs,
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  clipsHeader: {
+    minHeight: minimumTouchTarget,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.xxs,
+  },
+  clipsTitle: {
+    ...typography.sectionTitle,
+  },
+  addClipButton: {
+    minWidth: 76,
+    height: minimumTouchTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.md,
+  },
+  addClipLabel: {
+    ...typography.label,
+    color: colors.focus,
   },
   errorOverlay: {
     position: 'absolute',
     zIndex: 40,
-    top: editorWorkspaceLayout.headerHeight + editorWorkspaceLayout.sectionGap,
+    top: 60,
     right: spacing.md,
     left: spacing.md,
   },

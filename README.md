@@ -1,76 +1,89 @@
 # SnapCut
 
-SnapCut is an offline Android audio editor for arranging precise ranges from local audio and
-video on a two-track timeline. It keeps imported working media in the app's private storage,
-renders interactive waveforms, previews overlapping clips, and exports M4A, FLAC, or MP3 without
-sending media to a server.
+SnapCut is an offline Android audio editor for assembling precise ranges from local audio and
+video. Each project has a private media library and one ordered Clip list: the Clip array is the
+final playback and export order, every Clip starts immediately after the previous one, and edits
+never rewrite the imported source.
 
-> **Engineering status:** the current working tree targets the schema-v6 fixed-center editor
-> revision. Its local JavaScript, Kotlin, native-codec, and Debug APK gates pass; connected
-> emulator and physical-device acceptance has not yet passed for this revision. See
-> [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) for the exact verification boundary;
-> source or compilation alone is not treated as proof that a native media path works at runtime.
+> **Engineering status:** the current working tree targets the schema-v7 single sequential Clip
+> editor. Local Node, Expo, Kotlin/native, and Debug APK gates are recorded in
+> [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md); API 29/36 and physical-device media
+> acceptance remain pending. This iteration is Debug-only. Do not build or deliver a Release or
+> Preview APK until the user explicitly says SnapCut is finalized.
 
 ## What it does
 
-- Imports one local M4A/AAC, MP3, FLAC, WAV, supported MP4 audio track, or self-contained M4S
+- Imports one local M4A/AAC, MP3, FLAC, WAV, supported MP4/MOV audio track, or self-contained M4S
   source at a time through Android's system document picker.
 - Treats picker MIME types, names, extensions, and reported sizes as hints; Android media tracks
   and decoder availability are authoritative.
-- Creates an application-private working source before a project references the media.
-- Commits each imported source and its full-length timeline Clip together. The first Clip starts
-  at zero on Track 1; later imports also append to Track 1 and can then be dragged to Track 2. After
-  the committed project is reloaded successfully, the import progress modal closes automatically
-  and the new Clip appears.
-- Generates an 8,192-bin RMS/peak waveform without transferring PCM or media bytes into
-  JavaScript.
-- Presents the composition in a fixed `248dp` editor stage: an `80dp` upper scrub/ruler zone, two
-  permanently visible `56dp` tracks, and a `56dp` lower scrub zone. A fixed red playhead stays at
-  the exact horizontal center while the ruler, waveforms, and Clips move below it.
-- Uses the upper and lower zones only for tap/scrub positioning. Scrubbing pauses immediately and
-  never resumes automatically. Inside a track, dragging moves or changes the track of a Clip and
-  does not change playback time; white edge handles trim the source range directly.
-- Uses an overview bar below the tracks as the only viewport control. Its two handles resize the
-  visible interval, its body moves that interval, and a tap recenters it. The default visible span
-  is 30 seconds, the minimum is 1 second, and the main stage has no pinch-to-zoom gesture.
-- Supports split, delete, per-Clip gain from 0% to 100%, and independent equal-power fade-in and
-  fade-out operations. Volume uses one inline slider; Fade uses two inline sliders in 0.5-second
-  steps from 0 through 6 seconds. Fade-in plus fade-out cannot exceed the Clip duration.
-- Allows silent gaps and cross-track overlap while preventing overlap within one track. Editing
-  operations have a 50-step session-only Undo/Redo history; imported Sources remain available
-  when their automatically added Clip is undone.
-- Keeps Rename and Delete on the project list. The editor has no project overflow menu, and its
-  selected-Clip action rail contains one icon and one label for Volume, Fade, Split, and Delete.
-- Uses up to two synchronized native Media3 ExoPlayer instances, one per track, for composition
-  preview. Pause is an explicit revisioned command: the UI freezes immediately, stale load/play/
-  seek results cannot revive playback, and preview and decoded export apply the same Clip timing,
-  gain, and fade envelope.
-- Exports one composition as:
-  - `M4A · No re-encoding` when a contiguous, non-overlapping sequence uses compatible AAC,
-    unity gain, no fades, and safely aligned access-unit boundaries;
-  - `M4A · Re-encoded AAC` when the timeline requires mixing or processing, using AAC-LC at
-    320 kbps stereo or 160 kbps mono when the device exposes the required encoder;
+- Extracts a compatible AAC soundtrack from video into an audio-only private M4A without copying
+  the full video or re-encoding the AAC payload.
+- Copies supported audio into project-private storage so the project does not depend on the
+  original picker URI after import.
+- Adds an import to the Media library only; importing does not silently create a Clip. New sources
+  receive a project-local `Source N` name and can be renamed after import. Provider file names are
+  not persisted.
+- Lets the Media library preview or pause a complete source, rename it, add a Clip range, or delete
+  it when no Clip references it. Referenced sources return the stable `SOURCE_IN_USE` failure and
+  must remain until their Clips are removed.
+- Generates an 8,192-bin RMS/peak waveform in the background without transferring media bytes or
+  decoded PCM into JavaScript.
+- Shows one full-width composition waveform assembled from the ordered Clip ranges. Each segment
+  is proportional to its duration, missing source waveforms use a placeholder, and the entire
+  composition always fits the available width without zoom or pan.
+- Moves the composition cursor by tapping or dragging the waveform. Scrubbing pauses first, sends
+  one seek when it ends, and does not resume playback automatically.
+- Shows a compact ordered Clip list. Every row displays `Clip N`, the source name, and millisecond-
+  precise Start and End values. A dedicated long-press drag handle reorders rows; TalkBack exposes
+  equivalent Move earlier and Move later actions.
+- Opens a compact Clip editor when a row or `+ Clip` is selected. The editor chooses a source and
+  accepts exact `SS.mmm`, `M:SS.mmm`, or `H:MM:SS.mmm` Start/End input. A range must stay inside
+  its source and be at least 100 milliseconds. There is no preview inside this dialog.
+- Keeps the playback row limited to current/total time, graphical Play/Pause, Undo, and Redo.
+  Session history stores up to 50 Clip add, edit, reorder, and delete operations; it is not
+  persisted and does not undo import, source rename, or source deletion.
+- Derives the native preview and export timeline from the ordered list: every Clip uses Track 1,
+  unity gain, zero fade, and a start time equal to the durations of all preceding Clips. The app
+  exposes no multitrack editing, overlap, silence gap, per-Clip volume, fade, split, or timeline
+  zoom controls in schema v7.
+- Exports the composition as:
+  - `M4A · No re-encoding` when compatible AAC ranges pass access-unit preflight;
+  - explicitly labeled re-encoded AAC M4A when that existing native path is required and the
+    device exposes the required encoder;
   - 24-bit FLAC through one continuous encoder; or
   - 320 kbps CBR MP3 through one continuous encoder.
 
-FLAC, MP3, and re-encoded M4A share a bounded streaming two-track PCM mixer. They do not create a
-full temporary WAV composition. Overlapping tracks are summed after per-Clip gain and equal-power
-fades; values outside the valid PCM range are hard-clamped and the UI warns when overlap may clip.
-
-Converting AAC or MP3 input to FLAC does not restore information already lost by the source
-codec. MP3 output is not bit-perfect.
+FLAC, MP3, and re-encoded M4A use bounded native PCM streaming and do not create a full temporary
+WAV composition. Converting AAC or MP3 input to FLAC cannot restore information already lost by
+the source codec, and MP3 output is not bit-perfect.
 
 ## Architecture
 
 ```text
 Expo Router / React Native / strict TypeScript
-        │  project state, clips, UI, Zod contracts
-        ▼
-SnapCutMedia local Expo Module (Kotlin)
-        │  opaque content URI, inspection, bounded I/O, waveform, two-track preview/export
-        ├── Android MediaExtractor / MediaCodec / MediaMuxer
-        ├── Media3 ExoPlayer 1.10.1 (at most one player per track)
-        └── JNI: libFLAC 1.5.0 / LAME 4.0 / libsamplerate 0.2.2
+  -> project state, ordered Clips, waveform UI, Zod contracts
+  -> SnapCutMedia local Expo Module (Kotlin)
+     -> opaque content URI, inspection, bounded import, waveform, preview/export
+     -> Android MediaExtractor / MediaCodec / MediaMuxer
+     -> Media3 ExoPlayer 1.10.1
+     -> JNI: libFLAC 1.5.0 / LAME 4.0 / libsamplerate 0.2.2
+```
+
+The public project model is deliberately small:
+
+```ts
+interface SnapCutClip {
+  id: string;
+  sourceId: string;
+  startMs: number;
+  endMs: number;
+}
+
+interface SnapCutProject {
+  schemaVersion: 7;
+  // identity, name, timestamps, sources, ordered clips, last export
+}
 ```
 
 Media bytes, decoded PCM, transcoding, waveform accumulation, and export encoding stay native.
@@ -81,63 +94,57 @@ processing, Base64 media transfer, a network service, or broad Android storage p
 
 The selected `content://` URI is a short-lived capability, not a file path:
 
-- `SnapCutMedia` opens Android's single-file `ACTION_OPEN_DOCUMENT` picker. It requests audio,
-  video, `application/octet-stream`, and `video/iso.segment` candidates without requesting broad
-  storage or media-library access.
-- JavaScript never converts it to a “real path” and never reads, copies, deletes, or logs it.
-- Native code opens it through `ContentResolver`; file names, query tokens, and raw URIs are not
-  written to diagnostics.
+- `SnapCutMedia` opens Android's single-file `ACTION_OPEN_DOCUMENT` picker without requesting
+  broad storage or media-library access.
+- JavaScript never converts the URI to a “real path” and never reads, copies, deletes, or logs it.
+- Native code opens the capability through `ContentResolver`; file names, query tokens, raw URIs,
+  and original exception messages are excluded from diagnostics.
 - Unknown or contradictory source size metadata is verified with a cancellable 64 KiB,
   limit-plus-one stream. Exactly 600 MiB is accepted; one additional byte is rejected.
 - A non-seekable provider may be spooled once into bounded app-private staging.
 - Failed or cancelled work removes only SnapCut-owned partial files. The provider source is never
   modified or deleted.
-- Projects persist only private relative media paths and validated media metadata, so deleting the
-  original source after import does not break a committed project.
-- Opening the system picker may temporarily pause the host Activity. That picker stage remains
-  alive; once native media processing starts, backgrounding cancels the active job safely.
-- Staging output is verified with a fresh native extractor or decoder. It is never attached to the
-  preview player, and every private output URI is compared using the original URI string.
+- Project metadata references only validated private media and never persists the provider URI.
+- Staging output is inspected again before project commit, and private output URI equality, file
+  size, SHA-256, schema, and relevant media properties remain validated.
 
-Names, extensions, picker MIME values, and picker-reported sizes are hints only. A renamed MP3 or
-M4A file with an `.m4s` suffix is identified from its media track. A genuine fragmented M4S that
-lacks initialization metadata is rejected with a stable error instead of being guessed or joined
-to another file.
+Names, extensions, picker MIME values, and reported sizes remain hints. For example, a renamed
+MP3 or M4A with an `.m4s` suffix is identified from its media track, while a genuine fragmented
+M4S that lacks initialization metadata is rejected with a stable error.
 
-Project visibility is transactional: validated media and metadata are committed before
-`project.json`, which is the visibility point. Recovery uses valid committed metadata first, then
-a valid backup, and promotes a temporary file only when a transaction journal proves completion.
-
-## Storage
+## Storage and the v7 reset boundary
 
 App-owned data is stored below `Documents/SnapCut` in the application sandbox:
 
 ```text
 Documents/SnapCut/
-├── index.json                    # rebuildable cache
-├── diagnostics.json              # bounded, redacted local log
-├── projects/<project-id>/
-│   ├── project.json
-│   └── sources/<source-id>/
-│       ├── source.json
-│       ├── source.m4a|mp3|flac|wav
-│       └── waveform.json
-└── staging/.import-<job-id>/     # app-owned transactional partials
+  storage-generation.json          # written only after the v7 reset completes
+  index.json                       # rebuildable project index
+  diagnostics.json                 # bounded, redacted local log
+  projects/<project-id>/
+    project.json
+    sources/<source-id>/
+      source.json                  # immutable media-identity manifest
+      source.m4a|mp3|flac|wav
+      waveform.json
+  staging/                         # import/delete journals and app-owned partials
 ```
 
-Completed exports are published through Android MediaStore under `Music/SnapCut` and can be
-shared with a temporary read grant.
+Schema v7 intentionally does not migrate v1-v6 projects. On the first v7 startup, SnapCut removes
+its old private `projects`, `staging`, transaction data, and `index.json`, verifies that cleanup,
+then atomically writes the generation marker. If startup is interrupted, the absent marker makes
+the same bounded cleanup run again. This reset does **not** delete the system-picker source,
+published MediaStore exports under `Music/SnapCut`, or `diagnostics.json`.
 
-## Theme
-
-SnapCut uses a fixed dark purple interface derived from TempoLoop's semantic color system while
-retaining its own name and iconography. Tokens are centralized in
-`src/constants/theme.ts`; the primary button uses dark `#120A24` text on `#A970FF` for normal-text
-contrast.
+In v7, `source.json` stores immutable media identity, hash, size, duration, and codec properties.
+The mutable source display name and waveform job status live in `project.json`, so renaming a
+source does not create a false repair state. Source deletion is transactional and is allowed only
+after preview and waveform work for that source have stopped and a fresh project check confirms
+that no Clip references it.
 
 ## Requirements
 
-- Node.js 22.13 or newer within Node 22 (Node 23/24 is outside the checked project engine range)
+- Node.js 22.13 or newer within Node 22 (Node 23/24 is outside the checked engine range)
 - npm with the committed lockfile
 - JDK 17
 - Android SDK 36 and Build Tools 36.0.0
@@ -150,12 +157,12 @@ libsamplerate `0.2.2`. `npm ci` installs the exact JavaScript dependency graph f
 `package-lock.json`.
 
 The generated root `android/` directory is intentionally ignored. Native source belongs in
-`modules/snap-cut-media`; regenerate the Android project after native or app-config changes.
+`modules/snap-cut-media`; regenerate Android after native or app-config changes.
 
 ## Install and verify
 
 Use Node 22 and install from the lockfile. `npm run format` is a formatting check, while
-`npm run audit` is SnapCut's prohibited-implementation audit (it is not `npm audit`).
+`npm run audit` is SnapCut's prohibited-implementation audit rather than `npm audit`.
 
 ```powershell
 npm ci
@@ -169,7 +176,7 @@ npm run doctor
 npx expo prebuild --clean --platform android --no-install
 ```
 
-Run native tests and builds from the generated Android project with JDK 17:
+Run the Debug-native gates from the generated Android project with JDK 17:
 
 ```powershell
 Push-Location .\android
@@ -180,95 +187,47 @@ Push-Location .\android
 Pop-Location
 ```
 
-On macOS or Linux, change into `android` and use `./gradlew` with the same tasks. During active
-iteration, the only APK output to deliver is
-`android/app/build/outputs/apk/debug/app-debug.apk`.
+On macOS or Linux, change into `android` and use `./gradlew` with the same tasks. The only APK to
+build or deliver during this iteration is:
 
-## Development APK
+```text
+android/app/build/outputs/apk/debug/app-debug.apk
+```
 
-SnapCut contains a custom Android module and cannot run in Expo Go.
+The current v7 local gate results and exact Debug APK hash are recorded in
+`IMPLEMENTATION_STATUS.md`. They do not replace connected-emulator or physical-device acceptance.
 
-For local Android development, generate and install a Debug APK, then start Metro:
+## Debug APK and Metro
+
+SnapCut contains a custom Android module and cannot run in Expo Go. Generate and install the Debug
+APK, then start Metro:
 
 ```powershell
 npx expo prebuild --clean --platform android --no-install
 Push-Location .\android
 .\gradlew.bat :app:assembleDebug
 Pop-Location
-# Install app-debug.apk with Android Studio or: adb install -r .\android\app\build\outputs\apk\debug\app-debug.apk
+adb install -r .\android\app\build\outputs\apk\debug\app-debug.apk
 npm start
 ```
 
-For an EAS Development APK, log in and link this independent project once before its first cloud
-build (`npx eas-cli@latest login`, then `npx eas-cli@latest init`):
+The Debug APK loads JavaScript from Metro. A JavaScript/TypeScript-only change can normally use
+Fast Refresh; Kotlin, C/C++, Gradle, native-library, permission, or app-config changes require a
+new APK. Do not uninstall during ordinary iteration because uninstalling removes app-private
+data.
 
-Because the Expo configuration is TypeScript, EAS may print a new project ID without editing
-`app.config.ts`. In that case, add the returned ID as `extra.eas.projectId` and add the owning Expo
-account as `owner`, then verify with `npx eas-cli@latest project:info`. Never reuse a TempoLoop
-project ID or Android keystore.
+Release, Preview, and EAS packaging commands are deliberately omitted from this active workflow.
+They remain deferred until the user explicitly declares the editor finalized. A historical APK
+does not validate the schema-v7 working tree.
 
-```powershell
-npx eas-cli@latest build --platform android --profile development
-npx expo start --dev-client
-```
+## Verification boundary
 
-The Development APK loads JavaScript from Metro. If the phone cannot reach the computer over the
-LAN, use a tunnel or Android Debug Bridge port reversal. Any Kotlin, C/C++, Gradle, native-library,
-permission, or app-config change requires a new APK; Fast Refresh is sufficient only for
-JavaScript/TypeScript changes.
-
-## Release and Preview APKs after finalization
-
-Do not run or deliver a Release or Preview build while this revision is still being iterated. The
-current delivery contract is Debug-only until the user explicitly says SnapCut is finalized. The
-commands below are retained for that later acceptance stage, not for routine revision testing.
-
-A local Release APK embeds the JavaScript bundle and does not require Metro at runtime:
-
-```powershell
-npm ci
-npx expo prebuild --clean --platform android --no-install
-$env:NODE_ENV = 'production'
-Push-Location .\android
-.\gradlew.bat :app:assembleRelease --stacktrace --no-daemon
-Pop-Location
-```
-
-The generated Expo Android project signs this local Release build with its generated development
-key unless you deliberately configure another signing identity. Treat it as an internal test APK.
-An APK can replace an installed copy and preserve private projects only when both the package ID
-and signing key match.
-
-The EAS Preview profile is the recommended independently installable daily-use build:
-
-```powershell
-npx eas-cli@latest build --platform android --profile preview
-```
-
-Preview embeds the JavaScript bundle and is intended to start without Metro or internet access.
-Remote Expo updates are disabled. The cloud build itself requires internet access; the installed
-APK does not. Keep the application ID `com.snapcut.app`, EAS project, and Android keystore
-unchanged, then install updates over the existing app to preserve private projects. Do not
-uninstall as part of a normal update.
-
-To record an offline acceptance result, install the Release or Preview APK, stop Metro, force-stop
-SnapCut, enable airplane mode, and launch it again. Verify project discovery, local picker import,
-selection/composition preview, one available export path, and reopening the exported file. Record
-the device/API level and result in `IMPLEMENTATION_STATUS.md`; a successful build alone is not an
-offline runtime test.
-
-## Quality and verification boundary
-
-The current schema-v6 gate set covers the Node 22 quality suite, regenerated Android project,
-Kotlin unit tests, Media3/native-source gates, and a Debug APK built with JDK 17. Release and
-Preview packaging remain deferred until explicit finalization. A separate manually dispatched
-instrumentation workflow targets x86_64 API 29 and API 36 emulators. Workflow configuration is
-not recorded as a passing result until the corresponding GitHub run completes.
-
-`IMPLEMENTATION_STATUS.md` records which implementation phases and local gates have actually
-passed. Physical-device results are recorded separately; emulator, Jest, and Gradle success must
-not be reported as proof of near-600 MiB import, 30-minute export, phone-call/headset interruption,
-low-storage behavior, memory targets, overwrite-install retention, or EAS Preview behavior.
+Passing TypeScript, Jest, Gradle, or APK assembly proves only its corresponding build or test
+contract. It does not prove real-device media behavior. API 29/36 instrumentation, repeated
+audio/video and M4A import, waveform completion, ordered playback, exact-range export, pause and
+seek races, MediaStore publication, background interruption, near-600 MiB import, 30-minute
+export, low-storage handling, memory stability, and overwrite-install behavior require their own
+recorded emulator or physical-device results.
 
 ## Third-party software
 

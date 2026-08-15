@@ -23,6 +23,8 @@ export interface ClipEditHistoryState {
   commitRedo: (latestProjectBeforeRedo: SnapCutProject) => void;
   /** Clears history when the active project changes. */
   syncProject: (projectId: string | null) => void;
+  /** Clears snapshots that may reference a source removed from this project. */
+  clearProjectHistory: (projectId: string) => void;
   reset: () => void;
 }
 
@@ -115,6 +117,12 @@ export const useClipEditHistoryStore = create<ClipEditHistoryState>((set, get) =
     if (get().projectId === projectId) return;
     clearStacks();
     set({ projectId, canUndo: false, canRedo: false });
+  },
+
+  clearProjectHistory: (projectId) => {
+    if (get().projectId !== projectId) return;
+    clearStacks();
+    set({ canUndo: false, canRedo: false });
   },
 
   reset: () => {

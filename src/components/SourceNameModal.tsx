@@ -10,60 +10,53 @@ import {
   View,
 } from 'react-native';
 
-import { colors, copy, layout, radii, spacing, typography } from '@/constants';
+import { colors, layout, radii, spacing, typography } from '@/constants';
 
 import { AppButton } from './AppButton';
 import { ErrorBanner } from './ErrorBanner';
 
-interface ProjectNameModalProps {
+interface SourceNameModalProps {
   visible: boolean;
-  initialName?: string | undefined;
+  initialName: string;
   busy?: boolean;
   operationError?: string | null;
+  title?: string;
   onCancel: () => void;
   onDismissError?: (() => void) | undefined;
   onSubmit: (name: string) => void;
 }
 
-const maximumNameLength = 80;
-
-export function ProjectNameModal({
+function VisibleSourceNameModal({
   visible,
-  initialName = '',
+  initialName,
   busy = false,
   operationError = null,
+  title = 'Name Source',
   onCancel,
   onDismissError,
   onSubmit,
-}: ProjectNameModalProps) {
+}: SourceNameModalProps) {
   const [name, setName] = useState(initialName);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
 
-  const resetForm = () => {
-    setName(initialName);
-    setValidationMessage(null);
-  };
-
   const submit = () => {
-    const normalizedName = name.trim();
-    if (!normalizedName) {
-      setValidationMessage(copy.nameDialog.requiredError);
+    const normalized = name.trim();
+    if (!normalized) {
+      setValidationMessage('Enter a source name.');
       return;
     }
-    if (normalizedName.length > maximumNameLength) {
-      setValidationMessage(copy.nameDialog.tooLongError);
+    if ([...normalized].length > 255) {
+      setValidationMessage('Use 255 characters or fewer.');
       return;
     }
-    onSubmit(normalizedName);
+    onSubmit(normalized);
   };
 
   return (
     <Modal
       animationType="fade"
-      onShow={resetForm}
       onRequestClose={busy ? undefined : onCancel}
       statusBarTranslucent
-      testID="project-name-modal"
       transparent
       visible={visible}
     >
@@ -72,17 +65,14 @@ export function ProjectNameModal({
         style={styles.overlay}
       >
         <Pressable
-          accessibilityLabel={copy.nameDialog.cancelAction}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: busy }}
+          accessible={false}
           disabled={busy}
           onPress={onCancel}
           style={StyleSheet.absoluteFill}
-          testID="project-name-backdrop"
         />
-        <View accessibilityViewIsModal style={styles.dialog} testID="project-name-dialog">
+        <View accessibilityViewIsModal style={styles.dialog} testID="source-name-dialog">
           <Text accessibilityRole="header" style={styles.title}>
-            {copy.nameDialog.renameTitle}
+            {title}
           </Text>
           {operationError ? (
             <ErrorBanner
@@ -90,20 +80,19 @@ export function ProjectNameModal({
               {...(onDismissError ? { onDismiss: onDismissError } : {})}
             />
           ) : null}
-          <Text style={styles.label}>{copy.nameDialog.fieldLabel}</Text>
+          <Text style={styles.label}>Source name</Text>
           <TextInput
-            accessibilityLabel={copy.nameDialog.fieldLabel}
+            accessibilityLabel="Source name"
             autoCapitalize="sentences"
             autoCorrect={false}
             autoFocus
             editable={!busy}
-            maxLength={maximumNameLength + 1}
             onChangeText={(value) => {
               setName(value);
-              if (validationMessage) setValidationMessage(null);
+              setValidationMessage(null);
             }}
             onSubmitEditing={submit}
-            placeholder={copy.nameDialog.placeholder}
+            placeholder="Source 1"
             placeholderTextColor={colors.disabledText}
             returnKeyType="done"
             selectionColor={colors.focus}
@@ -116,21 +105,22 @@ export function ProjectNameModal({
             </Text>
           ) : null}
           <View style={styles.actions}>
-            <View style={styles.actionItem}>
-              <AppButton
-                disabled={busy}
-                label={copy.nameDialog.cancelAction}
-                onPress={onCancel}
-                variant="ghost"
-              />
-            </View>
-            <View style={styles.actionItem}>
-              <AppButton loading={busy} label={copy.nameDialog.saveAction} onPress={submit} />
-            </View>
+            <AppButton disabled={busy} label="Cancel" onPress={onCancel} variant="ghost" />
+            <AppButton loading={busy} label="Save" onPress={submit} />
           </View>
         </View>
       </KeyboardAvoidingView>
     </Modal>
+  );
+}
+
+export function SourceNameModal(props: SourceNameModalProps) {
+  if (!props.visible) return null;
+  return (
+    <VisibleSourceNameModal
+      key={`${props.title ?? 'Name Source'}:${props.initialName}`}
+      {...props}
+    />
   );
 }
 
@@ -139,7 +129,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     padding: spacing.lg,
-    backgroundColor: colors.accentTranslucent,
+    backgroundColor: colors.modalBackdrop,
   },
   dialog: {
     ...layout.card,
@@ -177,10 +167,7 @@ const styles = StyleSheet.create({
   actions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    marginTop: spacing.lg,
     gap: spacing.xs,
-  },
-  actionItem: {
-    minWidth: 96,
+    marginTop: spacing.lg,
   },
 });

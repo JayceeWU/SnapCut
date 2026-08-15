@@ -1,7 +1,13 @@
 import { randomUUID } from 'expo-crypto';
 
-import { addFullSourceClip } from '@/domain/clips';
-import { addSource, buildProjectIndex, createProject, renameProject } from '@/domain/projects';
+import {
+  addSource,
+  buildProjectIndex,
+  createProject,
+  removeUnusedSource,
+  renameProject,
+  renameSource as renameProjectSource,
+} from '@/domain/projects';
 import { parseSnapCutProject } from '@/domain/migrations';
 import { diagnosticLog } from '@/diagnostics';
 import {
@@ -11,6 +17,7 @@ import {
   waveformFileSchema,
 } from '@/domain/schemas';
 import type { SnapCutProject, WaveformFileV1, WaveformStatus } from '@/domain/types';
+import { immutableSourceMetadata } from '@/domain/sourceRelations';
 import { nativePrivateMediaVerifier } from '@/services/NativePrivateMediaVerifier';
 import {
   RecoveryService,
@@ -29,6 +36,12 @@ import {
   SHA256_PATTERN,
 } from './ImportTransaction';
 import { KeyedWriteQueue } from './KeyedWriteQueue';
+import {
+  sourceDeletionJournalSchema,
+  type SourceDeletionLifecyclePort,
+  type SourceDeletionJournal,
+} from './SourceDeletionTransaction';
+import { StorageGenerationService } from './StorageGenerationService';
 import { StorageLayout, storageLayout } from './StorageLayout';
 
 export type ProjectRepositoryErrorCode =
@@ -38,7 +51,9 @@ export type ProjectRepositoryErrorCode =
   | 'IMPORT_ALREADY_EXISTS'
   | 'IMPORT_FILE_MISSING'
   | 'IMPORT_RESULT_INVALID'
-  | 'PROJECT_DELETE_FAILED';
+  | 'PROJECT_DELETE_FAILED'
+  | 'SOURCE_IN_USE'
+  | 'SOURCE_DELETE_FAILED';
 
 export class ProjectRepositoryError extends Error {
   constructor(
@@ -63,6 +78,8 @@ export interface ProjectRepositoryOptions {
   readonly onRecoveryDiagnostic?: (diagnostic: RecoveryDiagnostic) => void;
   readonly now?: () => string;
   readonly idFactory?: () => string;
+  readonly storageGenerationService?: Pick<StorageGenerationService, 'ensureCurrentGeneration'>;
+  readonly sourceDeletionLifecycle?: SourceDeletionLifecyclePort;
 }
 
 function cloneProject(project: SnapCutProject): SnapCutProject {
@@ -83,6 +100,8 @@ export class ProjectRepository {
   private readonly now: () => string;
   private readonly idFactory: () => string;
   private readonly privateMediaVerifier: PrivateMediaVerifier | undefined;
+  private readonly storageGeneration: Pick<StorageGenerationService, 'ensureCurrentGeneration'>;
+  private sourceDeletionLifecycle: SourceDeletionLifecyclePort | undefined;
   private readonly writeQueue = new KeyedWriteQueue();
   private projects: SnapCutProject[] = [];
   private readonly repairStatuses = new Map<string, ProjectRepairStatus>();
@@ -104,6 +123,9 @@ export class ProjectRepository {
           : { onDiagnostic: options.onRecoveryDiagnostic }),
       });
     this.json = new AtomicJsonStore(this.layout.fileSystem);
+    this.storageGeneration =
+      options.storageGenerationService ?? new StorageGenerationService(this.layout);
+    this.sourceDeletionLifecycle = options.sourceDeletionLifecycle;
     this.now = options.now ?? (() => new Date().toISOString());
     this.idFactory = options.idFactory ?? randomUUID;
   }
@@ -120,6 +142,10 @@ export class ProjectRepository {
         this.initialization = null;
       }
     }
+  }
+
+  configureSourceDeletionLifecycle(lifecycle: SourceDeletionLifecyclePort | undefined): void {
+    this.sourceDeletionLifecycle = lifecycle;
   }
 
   list(): SnapCutProject[] {
@@ -255,14 +281,11 @@ export class ProjectRepository {
     return this.writeQueue.run(project.id, async () => {
       this.requireProject(project.id);
       const current = this.requireProject(project.id);
-      const currentSourceIds = new Set(current.sources.map(({ id }) => id));
-      for (const source of project.sources) {
-        if (!currentSourceIds.has(source.id)) {
-          throw new ProjectRepositoryError(
-            'IMPORT_RESULT_INVALID',
-            'New sources must be committed through finalizeImport().',
-          );
-        }
+      if (JSON.stringify(project.sources) !== JSON.stringify(current.sources)) {
+        throw new ProjectRepositoryError(
+          'IMPORT_RESULT_INVALID',
+          'Source changes require the dedicated import, rename, waveform, or delete operation.',
+        );
       }
       const withTimestamp = snapCutProjectSchema.parse({
         ...project,
@@ -290,6 +313,134 @@ export class ProjectRepository {
     });
   }
 
+  renameSource(projectId: string, sourceId: string, displayName: string): Promise<SnapCutProject> {
+    this.assertInitialized();
+    return this.writeQueue.run(projectId, async () => {
+      const renamed = renameProjectSource(
+        this.requireProject(projectId),
+        sourceId,
+        displayName,
+        this.now(),
+      );
+      await this.writeProject(renamed);
+      const status = this.repairStatuses.get(projectId) ?? { state: 'ready' as const, issues: [] };
+      this.replaceInMemory(renamed, status);
+      await this.writeIndex();
+      return cloneProject(renamed);
+    });
+  }
+
+  async deleteSource(projectId: string, sourceId: string): Promise<SnapCutProject> {
+    this.assertInitialized();
+    const beforePrepare = this.requireProject(projectId);
+    if (!beforePrepare.sources.some(({ id }) => id === sourceId)) {
+      throw new ProjectRepositoryError('PROJECT_NOT_FOUND', `Source ${sourceId} was not found.`);
+    }
+    if (beforePrepare.clips.some((clip) => clip.sourceId === sourceId)) {
+      throw new ProjectRepositoryError(
+        'SOURCE_IN_USE',
+        'Remove clips that use this source before deleting it.',
+      );
+    }
+    // Do not hold the project queue here: cancelling a waveform may finish by
+    // persisting its terminal status through this same queue.
+    await this.sourceDeletionLifecycle?.prepare(projectId, sourceId);
+
+    return this.writeQueue.run(projectId, async () => {
+      const current = this.requireProject(projectId);
+      if (!current.sources.some(({ id }) => id === sourceId)) {
+        throw new ProjectRepositoryError('PROJECT_NOT_FOUND', `Source ${sourceId} was not found.`);
+      }
+      if (current.clips.some((clip) => clip.sourceId === sourceId)) {
+        throw new ProjectRepositoryError(
+          'SOURCE_IN_USE',
+          'Remove clips that use this source before deleting it.',
+        );
+      }
+      const updated = removeUnusedSource(current, sourceId, this.now());
+      const jobId = this.idFactory();
+      const sourceDirectory = this.layout.sourceDirectoryUri(projectId, sourceId);
+      const deletionDirectory = this.layout.sourceDeleteDirectoryUri(jobId);
+      const journalUri = this.layout.projectSourceDeleteJournalUri(projectId, jobId);
+      if (
+        !this.layout.fileSystem.directoryExists(sourceDirectory) ||
+        this.layout.fileSystem.directoryExists(deletionDirectory)
+      ) {
+        throw new ProjectRepositoryError(
+          'SOURCE_DELETE_FAILED',
+          'The app-private source directory is unavailable for deletion.',
+        );
+      }
+
+      const journal: SourceDeletionJournal = sourceDeletionJournalSchema.parse({
+        schemaVersion: 1,
+        jobId,
+        projectId,
+        sourceId,
+        projectUpdatedAt: updated.updatedAt,
+      });
+      await this.json.write(journalUri, journal, (raw) => sourceDeletionJournalSchema.parse(raw));
+
+      let movedToDeletionDirectory = false;
+      let projectCommitted = false;
+      try {
+        try {
+          await this.layout.fileSystem.moveDirectory(sourceDirectory, deletionDirectory);
+        } catch {
+          // Some providers report failure after a completed move; state below is authoritative.
+        }
+        movedToDeletionDirectory =
+          this.layout.fileSystem.directoryExists(deletionDirectory) &&
+          !this.layout.fileSystem.directoryExists(sourceDirectory);
+        if (!movedToDeletionDirectory) {
+          throw new ProjectRepositoryError(
+            'SOURCE_DELETE_FAILED',
+            'The app-private source could not enter the deletion transaction.',
+          );
+        }
+        try {
+          await this.writeProject(updated);
+          projectCommitted = true;
+        } catch (error) {
+          const official = await this.readOfficialProject(projectId);
+          if (official !== null && this.projectsMatch(official, updated)) {
+            projectCommitted = true;
+          } else {
+            throw error;
+          }
+        }
+      } catch (error) {
+        if (!projectCommitted && movedToDeletionDirectory) {
+          try {
+            await this.layout.fileSystem.moveDirectory(deletionDirectory, sourceDirectory);
+          } catch {
+            // Keep the journal so startup recovery can finish the rollback.
+          }
+        }
+        if (this.layout.fileSystem.directoryExists(sourceDirectory)) {
+          this.tryDeleteFile(journalUri);
+        }
+        throw error;
+      }
+
+      try {
+        this.layout.fileSystem.deleteDirectory(deletionDirectory);
+        if (!this.layout.fileSystem.directoryExists(deletionDirectory)) {
+          this.tryDeleteFile(journalUri);
+        }
+      } catch {
+        // The source is no longer visible. Recovery retries app-private cleanup.
+      }
+      // Compute repair state only after the direct cleanup attempt. Inspection
+      // is also the bounded retry for a provider that failed once, ensuring the
+      // cached state reflects the final on-disk journal/staging state.
+      const status = await this.recovery.inspectProject(updated);
+      this.replaceInMemory(updated, status);
+      await this.writeIndex();
+      return cloneProject(updated);
+    });
+  }
+
   async delete(projectId: string): Promise<void> {
     this.assertInitialized();
     await this.writeQueue.run(projectId, async () => {
@@ -301,6 +452,7 @@ export class ProjectRepository {
           'Unsafe project deletion target.',
         );
       }
+      await this.cleanupPendingSourceDeletions(projectId);
       this.layout.fileSystem.deleteDirectory(uri);
       if (this.layout.fileSystem.directoryExists(uri)) {
         throw new ProjectRepositoryError('PROJECT_DELETE_FAILED', 'Project directory remains.');
@@ -325,6 +477,7 @@ export class ProjectRepository {
           'Unsafe damaged project deletion target.',
         );
       }
+      await this.cleanupPendingSourceDeletions(projectId);
       this.layout.fileSystem.deleteDirectory(uri);
       if (this.layout.fileSystem.directoryExists(uri)) {
         throw new ProjectRepositoryError(
@@ -402,9 +555,9 @@ export class ProjectRepository {
       await this.layout.fileSystem.moveFile(partialUri, completedAudioUri);
 
       const sourceFile = sourceFileSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: 2,
         projectId: current.id,
-        source,
+        source: immutableSourceMetadata(source),
       });
       await this.json.write(
         this.layout.transactionSourceMetadataUri(input.jobId, source.id),
@@ -427,14 +580,7 @@ export class ProjectRepository {
       }
 
       const updatedAt = this.now();
-      const withSource = addSource(current, source, updatedAt);
-      const updated = addFullSourceClip(
-        withSource,
-        source.id,
-        input.clipId,
-        input.targetTrackId,
-        updatedAt,
-      );
+      const updated = addSource(current, source, updatedAt);
       const journal: ImportTransactionJournal = importTransactionJournalSchema.parse({
         schemaVersion: 1,
         jobId: input.jobId,
@@ -530,6 +676,7 @@ export class ProjectRepository {
   }
 
   private async initializeInternal(): Promise<void> {
+    await this.storageGeneration.ensureCurrentGeneration();
     const report = await this.recovery.recover();
     this.projects = report.projects.map(({ project }) => project);
     this.corruptProjectIds = [...report.corruptProjectIds];
@@ -630,6 +777,70 @@ export class ProjectRepository {
     } catch {
       // index.json is a rebuildable cache. A cache refresh must never turn an
       // already-committed project mutation into a reported failure.
+    }
+  }
+
+  /**
+   * A project directory owns the only trusted link between a source-delete
+   * job and its staging trash. Validate every committed journal first, then
+   * remove only the exact derived staging directories. This runs before both
+   * healthy and corrupt project deletion so deleting the journals cannot
+   * strand private media forever.
+   */
+  private async cleanupPendingSourceDeletions(projectId: string): Promise<void> {
+    const projectDirectory = this.layout.projectDirectoryUri(projectId);
+    const pending: string[] = [];
+    for (const entry of this.layout.fileSystem.listDirectory(projectDirectory)) {
+      const fileJobId = this.layout.sourceDeleteJobIdFromJournalFileName(entry.name);
+      if (fileJobId === null) continue;
+      if (entry.kind !== 'file') {
+        throw new ProjectRepositoryError(
+          'PROJECT_DELETE_FAILED',
+          'A source deletion journal is not a regular app-private file.',
+        );
+      }
+      const journal = await this.json.read(entry.uri, (raw) =>
+        sourceDeletionJournalSchema.parse(raw),
+      );
+      if (
+        journal === null ||
+        journal.projectId !== projectId ||
+        journal.jobId !== fileJobId ||
+        entry.uri !== this.layout.projectSourceDeleteJournalUri(projectId, journal.jobId)
+      ) {
+        throw new ProjectRepositoryError(
+          'PROJECT_DELETE_FAILED',
+          'A source deletion journal failed strict containment validation.',
+        );
+      }
+      const deletionDirectoryUri = this.layout.sourceDeleteDirectoryUri(journal.jobId);
+      if (!this.layout.isSourceDeleteDirectoryUri(deletionDirectoryUri)) {
+        throw new ProjectRepositoryError(
+          'PROJECT_DELETE_FAILED',
+          'A source deletion target is outside the strict staging layout.',
+        );
+      }
+      pending.push(deletionDirectoryUri);
+    }
+
+    for (const deletionDirectoryUri of pending) {
+      try {
+        if (this.layout.fileSystem.directoryExists(deletionDirectoryUri)) {
+          this.layout.fileSystem.deleteDirectory(deletionDirectoryUri);
+        }
+      } catch (error) {
+        throw new ProjectRepositoryError(
+          'PROJECT_DELETE_FAILED',
+          'Pending source deletion media could not be removed safely.',
+          { cause: error },
+        );
+      }
+      if (this.layout.fileSystem.directoryExists(deletionDirectoryUri)) {
+        throw new ProjectRepositoryError(
+          'PROJECT_DELETE_FAILED',
+          'Pending source deletion media remains in app-private staging.',
+        );
+      }
     }
   }
 

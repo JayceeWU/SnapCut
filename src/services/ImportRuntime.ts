@@ -69,6 +69,10 @@ export async function cancelActiveImportRuntime(): Promise<void> {
   await activeImportRuntime?.coordinator.cancelActive();
 }
 
+export async function cancelSourceWaveform(projectId: string, sourceId: string): Promise<void> {
+  await activeImportRuntime?.waveformScheduler.cancel(projectId, sourceId);
+}
+
 /**
  * Prevents project deletion from racing an import commit or a waveform writer.
  * Heavy media work is process-wide and serialized, so deletion waits until the

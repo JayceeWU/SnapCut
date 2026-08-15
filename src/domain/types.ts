@@ -52,10 +52,13 @@ export interface SnapCutClipV5 extends SnapCutClipV1 {
   fadeOutMs: LegacyFadeDurationMs;
 }
 
-export interface SnapCutClip extends Omit<SnapCutClipV5, 'fadeInMs' | 'fadeOutMs'> {
+export interface SnapCutClipV6 extends Omit<SnapCutClipV5, 'fadeInMs' | 'fadeOutMs'> {
   fadeInMs: FadeDurationMs;
   fadeOutMs: FadeDurationMs;
 }
+
+/** v7 deliberately returns to the non-destructive ordered range model. */
+export type SnapCutClip = SnapCutClipV1;
 
 export type SnapCutExportFormat = 'm4a' | 'flac' | 'mp3';
 
@@ -116,8 +119,13 @@ export interface SnapCutProjectV5 extends Omit<SnapCutProjectV4, 'schemaVersion'
   trackCount: 2;
 }
 
-export interface SnapCutProject extends Omit<SnapCutProjectV5, 'schemaVersion' | 'clips'> {
+export interface SnapCutProjectV6 extends Omit<SnapCutProjectV5, 'schemaVersion' | 'clips'> {
   schemaVersion: 6;
+  clips: SnapCutClipV6[];
+}
+
+export interface SnapCutProject extends Omit<SnapCutProjectV3, 'schemaVersion' | 'clips'> {
+  schemaVersion: 7;
   clips: SnapCutClip[];
 }
 
@@ -126,6 +134,19 @@ export interface SourceFileV1 {
   projectId: string;
   source: SnapCutSource;
 }
+
+export type ImmutableSourceManifest = Omit<
+  SnapCutSource,
+  'displayName' | 'waveformFileName' | 'waveformStatus'
+>;
+
+export interface SourceFileV2 {
+  schemaVersion: 2;
+  projectId: string;
+  source: ImmutableSourceManifest;
+}
+
+export type SourceFile = SourceFileV2;
 
 export interface WaveformFileV1 {
   schemaVersion: 1;
@@ -207,7 +228,6 @@ export interface ExportPreflightResult {
 
 export interface ClipTimelineEntry {
   clipId: string;
-  trackId: TrackId;
   compositionStartMs: number;
   compositionEndMs: number;
 }

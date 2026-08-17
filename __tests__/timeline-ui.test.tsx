@@ -9,6 +9,7 @@ import {
   buildCompositionWaveformSegments,
   compositionDurationFromClips,
   validateClipRangeDraft,
+  validateClipTimePartsDraft,
 } from '@/components';
 import type { SnapCutClip, SnapCutSource, WaveformFileV1 } from '@/domain';
 
@@ -184,6 +185,25 @@ describe('precise clip editor', () => {
     expect(validateClipRangeDraft(sourceA.id, '0:10.000', '1:00.000', [sourceA]).message).toBe(
       'End cannot be later than 0:40.000.',
     );
+    expect(
+      validateClipTimePartsDraft(
+        sourceA.id,
+        { minutes: '0', seconds: '10', milliseconds: '250' },
+        { minutes: '0', seconds: '20', milliseconds: '750' },
+        [sourceA],
+      ),
+    ).toEqual({
+      value: { sourceId: sourceA.id, startMs: 10_250, endMs: 20_750 },
+      message: null,
+    });
+    expect(
+      validateClipTimePartsDraft(
+        sourceA.id,
+        { minutes: '0', seconds: '60', milliseconds: '000' },
+        { minutes: '1', seconds: '01', milliseconds: '000' },
+        [sourceA],
+      ).message,
+    ).toBe('Enter minutes, seconds, and milliseconds using numbers.');
   });
 
   it('resets to the full source when source changes and has no preview', async () => {
@@ -199,11 +219,35 @@ describe('precise clip editor', () => {
       />,
     );
     await fireEvent.press(screen.getByRole('radio', { name: /Music/ }));
-    expect(screen.getByTestId('clip-start-input').props.value).toBe('0:00.000');
-    expect(screen.getByTestId('clip-end-input').props.value).toBe('0:20.000');
+    expect(screen.getByTestId('clip-start-minutes-input').props.value).toBe('0');
+    expect(screen.getByTestId('clip-start-seconds-input').props.value).toBe('00');
+    expect(screen.getByTestId('clip-start-milliseconds-input').props.value).toBe('000');
+    expect(screen.getByTestId('clip-end-minutes-input').props.value).toBe('0');
+    expect(screen.getByTestId('clip-end-seconds-input').props.value).toBe('20');
+    expect(screen.getByTestId('clip-end-milliseconds-input').props.value).toBe('000');
+    expect(screen.getAllByText('M')).toHaveLength(2);
+    expect(screen.getAllByText('SS')).toHaveLength(2);
+    expect(screen.getAllByText('mmm')).toHaveLength(2);
     expect(screen.queryByText(/Preview/u)).toBeNull();
     await fireEvent.press(screen.getByRole('button', { name: 'Save' }));
     expect(onSave).toHaveBeenCalledWith({ sourceId: sourceB.id, startMs: 0, endMs: 20_000 });
+  });
+
+  it('saves separately entered minute, second, and millisecond fields exactly', async () => {
+    const onSave = jest.fn();
+    const screen = await render(
+      <ClipEditModal onCancel={jest.fn()} onSave={onSave} sources={[sourceA]} visible />,
+    );
+
+    await fireEvent.changeText(screen.getByLabelText('Start minutes'), '0');
+    await fireEvent.changeText(screen.getByLabelText('Start seconds'), '12');
+    await fireEvent.changeText(screen.getByLabelText('Start milliseconds'), '345');
+    await fireEvent.changeText(screen.getByLabelText('End minutes'), '0');
+    await fireEvent.changeText(screen.getByLabelText('End seconds'), '20');
+    await fireEvent.changeText(screen.getByLabelText('End milliseconds'), '678');
+    await fireEvent.press(screen.getByRole('button', { name: 'Save' }));
+
+    expect(onSave).toHaveBeenCalledWith({ sourceId: sourceA.id, startMs: 12_345, endMs: 20_678 });
   });
 
   it('keeps the clip dialog open and shows a native preview release failure inside it', async () => {

@@ -29,6 +29,72 @@ export interface ClipRangeValidationResult {
   message: string | null;
 }
 
+export interface ClipTimeParts {
+  minutes: string;
+  seconds: string;
+  milliseconds: string;
+}
+
+function timePartsFromMilliseconds(valueMs: number): ClipTimeParts {
+  const totalMinutes = Math.floor(valueMs / 60_000);
+  const seconds = Math.floor(valueMs / 1_000) % 60;
+  const milliseconds = valueMs % 1_000;
+  return {
+    minutes: String(totalMinutes),
+    seconds: String(seconds).padStart(2, '0'),
+    milliseconds: String(milliseconds).padStart(3, '0'),
+  };
+}
+
+function parseTimeParts(parts: ClipTimeParts): number {
+  const values = [parts.minutes, parts.seconds, parts.milliseconds];
+  if (values.some((value) => !/^\d+$/u.test(value))) {
+    throw new Error('Time parts must contain digits.');
+  }
+
+  const minutes = Number(parts.minutes);
+  const seconds = Number(parts.seconds);
+  const milliseconds = Number(parts.milliseconds);
+  if (
+    !Number.isSafeInteger(minutes) ||
+    !Number.isSafeInteger(seconds) ||
+    !Number.isSafeInteger(milliseconds) ||
+    seconds >= 60 ||
+    milliseconds >= 1_000
+  ) {
+    throw new Error('Time parts are outside their allowed ranges.');
+  }
+
+  const valueMs = minutes * 60_000 + seconds * 1_000 + milliseconds;
+  if (!Number.isSafeInteger(valueMs)) {
+    throw new Error('Time is too large.');
+  }
+  return valueMs;
+}
+
+function validateClipMilliseconds(
+  sourceId: string,
+  startMs: number,
+  endMs: number,
+  sources: readonly SnapCutSource[],
+): ClipRangeValidationResult {
+  const source = sources.find(({ id }) => id === sourceId);
+  if (!source) return { value: null, message: 'Choose a source.' };
+  if (startMs >= endMs) {
+    return { value: null, message: 'End must be later than start.' };
+  }
+  if (endMs - startMs < 100) {
+    return { value: null, message: 'Choose at least 0.100 seconds.' };
+  }
+  if (endMs > source.durationMs) {
+    return {
+      value: null,
+      message: `End cannot be later than ${formatTimelineTime(source.durationMs)}.`,
+    };
+  }
+  return { value: { sourceId, startMs, endMs }, message: null };
+}
+
 export function validateClipRangeDraft(
   sourceId: string,
   startInput: string,
@@ -49,19 +115,27 @@ export function validateClipRangeDraft(
       message: 'Use SS.mmm, M:SS.mmm, or H:MM:SS.mmm.',
     };
   }
-  if (startMs >= endMs) {
-    return { value: null, message: 'End must be later than start.' };
-  }
-  if (endMs - startMs < 100) {
-    return { value: null, message: 'Choose at least 0.100 seconds.' };
-  }
-  if (endMs > source.durationMs) {
+  return validateClipMilliseconds(sourceId, startMs, endMs, sources);
+}
+
+export function validateClipTimePartsDraft(
+  sourceId: string,
+  start: ClipTimeParts,
+  end: ClipTimeParts,
+  sources: readonly SnapCutSource[],
+): ClipRangeValidationResult {
+  let startMs: number;
+  let endMs: number;
+  try {
+    startMs = parseTimeParts(start);
+    endMs = parseTimeParts(end);
+  } catch {
     return {
       value: null,
-      message: `End cannot be later than ${formatTimelineTime(source.durationMs)}.`,
+      message: 'Enter minutes, seconds, and milliseconds using numbers.',
     };
   }
-  return { value: { sourceId, startMs, endMs }, message: null };
+  return validateClipMilliseconds(sourceId, startMs, endMs, sources);
 }
 
 interface ClipEditModalProps {
@@ -86,6 +160,75 @@ function initialSource(
   return sources.find(({ id }) => id === sourceId) ?? sources[0] ?? null;
 }
 
+interface TimePartsEditorProps {
+  label: string;
+  value: ClipTimeParts;
+  busy: boolean;
+  invalid: boolean;
+  testIdPrefix: string;
+  onChange: (value: ClipTimeParts) => void;
+  onSubmitEditing?: (() => void) | undefined;
+}
+
+function digitsOnly(value: string, maxLength: number): string {
+  return value.replace(/\D/gu, '').slice(0, maxLength);
+}
+
+function TimePartsEditor({
+  label,
+  value,
+  busy,
+  invalid,
+  testIdPrefix,
+  onChange,
+  onSubmitEditing,
+}: TimePartsEditorProps) {
+  const parts = [
+    { key: 'minutes' as const, label: 'M', accessibilityLabel: 'minutes', maxLength: 6 },
+    { key: 'seconds' as const, label: 'SS', accessibilityLabel: 'seconds', maxLength: 2 },
+    {
+      key: 'milliseconds' as const,
+      label: 'mmm',
+      accessibilityLabel: 'milliseconds',
+      maxLength: 3,
+    },
+  ];
+
+  return (
+    <View>
+      <Text style={styles.label}>{label}</Text>
+      <View style={styles.timePartsRow}>
+        {parts.map((part) => (
+          <View key={part.key} style={styles.timePartField}>
+            <Text style={styles.timePartLabel}>{part.label}</Text>
+            <TextInput
+              accessibilityLabel={`${label} ${part.accessibilityLabel}`}
+              autoCorrect={false}
+              editable={!busy}
+              inputMode="numeric"
+              keyboardType="number-pad"
+              maxLength={part.maxLength}
+              onChangeText={(input) =>
+                onChange({ ...value, [part.key]: digitsOnly(input, part.maxLength) })
+              }
+              {...(part.key === 'milliseconds' && onSubmitEditing
+                ? { onSubmitEditing, returnKeyType: 'done' as const }
+                : {})}
+              placeholder={part.key === 'minutes' ? '0' : part.key === 'seconds' ? '00' : '000'}
+              placeholderTextColor={colors.disabledText}
+              selectTextOnFocus
+              selectionColor={colors.focus}
+              style={[styles.input, styles.timePartInput, invalid && styles.inputError]}
+              testID={`${testIdPrefix}-${part.key}-input`}
+              value={value[part.key]}
+            />
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function VisibleClipEditModal({
   visible,
   sources,
@@ -103,21 +246,21 @@ function VisibleClipEditModal({
     [clip, initialSourceId, sources],
   );
   const [sourceId, setSourceId] = useState(firstSource?.id ?? '');
-  const [startInput, setStartInput] = useState(formatTimelineTime(clip?.startMs ?? 0));
-  const [endInput, setEndInput] = useState(
-    formatTimelineTime(clip?.endMs ?? firstSource?.durationMs ?? 0),
+  const [startInput, setStartInput] = useState(() => timePartsFromMilliseconds(clip?.startMs ?? 0));
+  const [endInput, setEndInput] = useState(() =>
+    timePartsFromMilliseconds(clip?.endMs ?? firstSource?.durationMs ?? 0),
   );
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
 
   const chooseSource = (source: SnapCutSource) => {
     setSourceId(source.id);
-    setStartInput(formatTimelineTime(0));
-    setEndInput(formatTimelineTime(source.durationMs));
+    setStartInput(timePartsFromMilliseconds(0));
+    setEndInput(timePartsFromMilliseconds(source.durationMs));
     setValidationMessage(null);
   };
 
   const submit = () => {
-    const result = validateClipRangeDraft(sourceId, startInput, endInput, sources);
+    const result = validateClipTimePartsDraft(sourceId, startInput, endInput, sources);
     if (!result.value) {
       setValidationMessage(result.message);
       return;
@@ -187,49 +330,31 @@ function VisibleClipEditModal({
             })}
           </ScrollView>
 
-          <View style={styles.timeRow}>
-            <View style={styles.timeField}>
-              <Text style={styles.label}>Start</Text>
-              <TextInput
-                accessibilityLabel="Clip start time"
-                autoCorrect={false}
-                editable={!busy}
-                onChangeText={(value) => {
-                  setStartInput(value);
-                  setValidationMessage(null);
-                }}
-                placeholder="0:00.000"
-                placeholderTextColor={colors.disabledText}
-                selectTextOnFocus
-                selectionColor={colors.focus}
-                style={[styles.input, validationMessage && styles.inputError]}
-                testID="clip-start-input"
-                value={startInput}
-              />
-            </View>
-            <View style={styles.timeField}>
-              <Text style={styles.label}>End</Text>
-              <TextInput
-                accessibilityLabel="Clip end time"
-                autoCorrect={false}
-                editable={!busy}
-                onChangeText={(value) => {
-                  setEndInput(value);
-                  setValidationMessage(null);
-                }}
-                onSubmitEditing={submit}
-                placeholder="0:00.000"
-                placeholderTextColor={colors.disabledText}
-                returnKeyType="done"
-                selectTextOnFocus
-                selectionColor={colors.focus}
-                style={[styles.input, validationMessage && styles.inputError]}
-                testID="clip-end-input"
-                value={endInput}
-              />
-            </View>
+          <View style={styles.timeEditors}>
+            <TimePartsEditor
+              busy={busy}
+              invalid={validationMessage !== null}
+              label="Start"
+              onChange={(value) => {
+                setStartInput(value);
+                setValidationMessage(null);
+              }}
+              testIdPrefix="clip-start"
+              value={startInput}
+            />
+            <TimePartsEditor
+              busy={busy}
+              invalid={validationMessage !== null}
+              label="End"
+              onChange={(value) => {
+                setEndInput(value);
+                setValidationMessage(null);
+              }}
+              onSubmitEditing={submit}
+              testIdPrefix="clip-end"
+              value={endInput}
+            />
           </View>
-          <Text style={styles.inputHint}>SS.mmm · M:SS.mmm · H:MM:SS.mmm</Text>
           {validationMessage ? (
             <Text accessibilityLiveRegion="polite" style={styles.validation}>
               {validationMessage}
@@ -308,13 +433,20 @@ const styles = StyleSheet.create({
     marginTop: spacing.xxs,
     fontVariant: ['tabular-nums'],
   },
-  timeRow: {
-    flexDirection: 'row',
+  timeEditors: {
     gap: spacing.sm,
   },
-  timeField: {
+  timePartsRow: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+  timePartField: {
     flex: 1,
     minWidth: 0,
+  },
+  timePartLabel: {
+    ...typography.caption,
+    marginBottom: spacing.xxs,
   },
   input: {
     height: 50,
@@ -327,12 +459,11 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
     paddingHorizontal: spacing.sm,
   },
+  timePartInput: {
+    textAlign: 'center',
+  },
   inputError: {
     borderColor: colors.error,
-  },
-  inputHint: {
-    ...typography.caption,
-    marginTop: spacing.xs,
   },
   validation: {
     ...typography.caption,

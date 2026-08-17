@@ -141,4 +141,18 @@ describe('pinned native codec source provenance', () => {
       /add_library\(snapcut_codec SHARED[\s\S]*snapcut_codec_jni\.cpp[\s\S]*export_codec_jni\.cpp[\s\S]*\)/u,
     );
   });
+
+  test('uses R8-safe class literals for the Release Media3 availability probe', () => {
+    const moduleSource = readFileSync(
+      path.resolve(
+        process.cwd(),
+        'modules/snap-cut-media/android/src/main/java/expo/modules/snapcutmedia/SnapCutMediaModule.kt',
+      ),
+      'utf8',
+    );
+
+    expect(moduleSource).toContain('MediaItem::class.java');
+    expect(moduleSource).toContain('ExoPlayer::class.java');
+    expect(moduleSource).not.toMatch(/Class\.forName\("androidx\.media3\./u);
+  });
 });

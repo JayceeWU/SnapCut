@@ -1,5 +1,7 @@
 package expo.modules.snapcutmedia
 
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
@@ -84,8 +86,10 @@ class SnapCutMediaModule : Module() {
 
     Function("getCodecBuildInfo") {
       val codecBuildInfo = NativeCodecBridge.getBuildInfo()
-      val media3Available = classAvailable("androidx.media3.common.MediaItem") &&
-        classAvailable("androidx.media3.exoplayer.ExoPlayer")
+      // Use class literals so R8 rewrites these references when it obfuscates
+      // Media3 in minified Release builds. String-based Class.forName checks
+      // keep the original names and incorrectly report Media3 as unavailable.
+      val media3Available = linkedMedia3ClassesAvailable()
       mapOf(
         "moduleVersion" to MODULE_VERSION,
         "media3" to libraryStatus(BuildConfig.SNAPCUT_MEDIA3_VERSION, media3Available),
@@ -683,9 +687,11 @@ class SnapCutMediaModule : Module() {
     "available" to available
   )
 
-  private fun classAvailable(className: String): Boolean = runCatching {
-    Class.forName(className, false, javaClass.classLoader)
-  }.isSuccess
+  private fun linkedMedia3ClassesAvailable(): Boolean = runCatching {
+    arrayOf(MediaItem::class.java, ExoPlayer::class.java).all { mediaClass ->
+      mediaClass.classLoader != null
+    }
+  }.getOrDefault(false)
 
   private companion object {
     const val MODULE_NAME = "SnapCutMedia"

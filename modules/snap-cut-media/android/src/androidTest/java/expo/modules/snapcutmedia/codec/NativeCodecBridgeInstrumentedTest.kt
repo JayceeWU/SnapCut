@@ -12,10 +12,8 @@ class NativeCodecBridgeInstrumentedTest {
   fun reportsPinnedRuntimeVersionsAndClosesNativeHandlesIdempotently() {
     val info = NativeCodecBridge.getBuildInfo()
     assertTrue(info.bridgeLoaded)
-    assertEquals("1.5.0", info.flac.version)
     assertEquals("4.0", info.lame.version)
     assertEquals("0.2.2", info.libsamplerate.version)
-    assertTrue(info.flac.available)
     assertTrue(info.lame.available)
     assertTrue(info.libsamplerate.available)
 

@@ -1,0 +1,80 @@
+name: Android instrumentation
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - .github/workflows/android-instrumentation.yml
+      - package-lock.json
+      - modules/snap-cut-media/android/src/main/**
+      - modules/snap-cut-media/android/src/androidTest/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  instrumentation:
+    name: API ${{ matrix.api-level }} instrumentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api-level: 29
+            target: default
+          - api-level: 36
+            target: aosp_atd
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Android project
+        run: npx expo prebuild --clean --platform android --no-install
+        env:
+          NODE_ENV: production
+
+      - name: Make Gradle executable
+        run: chmod +x android/gradlew
+
+      - name: Build instrumentation APKs
+        run: ./android/gradlew -p android :snap-cut-media:assembleDebug :snap-cut-media:assembleDebugAndroidTest -PsnapcutInstrumentationAbi=x86_64 --stacktrace --no-daemon
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run module instrumentation
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: ${{ matrix.target }}
+          arch: x86_64
+          profile: pixel_2
+          cores: 4
+          ram-size: 4096M
+          heap-size: 512M
+          disk-size: 4096M
+          disable-animations: true
+          script: >-
+            adb wait-for-device && sh -c 'attempt=0; until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ] && adb shell service check package 2>/dev/null | grep -q "Service package: found"; do attempt=$((attempt + 1)); if [ "$attempt" -ge 120 ]; then exit 1; fi; sleep 2; done' && ./android/gradlew -p android :snap-cut-media:connectedDebugAndroidTest -PsnapcutInstrumentationAbi=x86_64 --stacktrace --no-daemon

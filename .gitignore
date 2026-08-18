@@ -1,0 +1,54 @@
+# dependencies
+node_modules/
+
+# Expo and generated native projects
+.expo/
+dist/
+/android/
+/ios/
+expo-env.d.ts
+
+# test and quality output
+coverage/
+copypaste/
+
+# local configuration and secrets
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.key
+*.pem
+*.pfx
+*.der
+*.p12
+*.mobileprovision
+google-services.json
+local.properties
+
+# Gradle and native build output
+.gradle/
+.cxx/
+**/build/
+captures/
+*.hprof
+*.apk
+*.aab
+*.so
+*.o
+*.obj
+
+# editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+
+# implementation contract remains local
+.agents/
+
+# one-time project scaffold
+.scaffold-sdk57/

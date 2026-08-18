@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snapcut-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check duplicate code
+        run: npm run cpd
+
+      - name: Upload duplicate-code report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copypaste-report
+          path: copypaste/
+          if-no-files-found: ignore
+
+      - name: Test
+        run: npm test
+
+      - name: Check formatting
+        run: npm run format
+
+      - name: Audit prohibited implementations
+        run: npm run audit
+
+      - name: Expo Doctor
+        run: npm run doctor
+
+  android-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Android project
+        run: npx expo prebuild --clean --platform android --no-install
+        env:
+          NODE_ENV: production
+
+      - name: Make Gradle executable
+        run: chmod +x android/gradlew
+
+      - name: Test native module
+        working-directory: android
+        run: ./gradlew :snap-cut-media:testDebugUnitTest --stacktrace --no-daemon
+
+      - name: Compile instrumentation tests
+        working-directory: android
+        run: ./gradlew :snap-cut-media:assembleDebugAndroidTest --stacktrace --no-daemon
+        env:
+          NODE_ENV: production
+
+      - name: Verify Media3 alignment
+        working-directory: android
+        run: ./gradlew :snap-cut-media:verifyMedia3Versions --stacktrace --no-daemon
+
+      - name: Verify native codec sources
+        working-directory: android
+        run: ./gradlew :snap-cut-media:verifyNativeCodecSources --stacktrace --no-daemon
+
+      - name: Build Debug and minified Release APKs
+        working-directory: android
+        run: ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace --no-daemon
+        env:
+          NODE_ENV: production
+
+      - name: Audit Release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          test -s "$APK"
+          unzip -l "$APK" | grep -F 'assets/index.android.bundle'
+          unzip -l "$APK" | grep -F 'lib/arm64-v8a/libsnapcut_codec.so'
+          unzip -l "$APK" | grep -F 'lib/arm64-v8a/libmp3lame.so'
+          unzip -l "$APK" | grep -F 'lib/x86_64/libsnapcut_codec.so'
+          unzip -l "$APK" | grep -F 'lib/x86_64/libmp3lame.so'
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump permissions "$APK" > release-permissions.txt
+          ! grep -E 'SYSTEM_ALERT_WINDOW|MANAGE_EXTERNAL_STORAGE|READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|READ_MEDIA_(AUDIO|IMAGES|VIDEO)|RECORD_AUDIO|CAMERA' release-permissions.txt
+
+      - name: Upload internal APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapcut-android-apks
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 14

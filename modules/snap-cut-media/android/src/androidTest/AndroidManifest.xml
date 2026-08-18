@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <provider
+      android:name="expo.modules.snapcutmedia.fixtures.FixtureContentProvider"
+      android:authorities="expo.modules.snapcutmedia.test.fixtures"
+      android:exported="false"
+      android:grantUriPermissions="false" />
+  </application>
+</manifest>

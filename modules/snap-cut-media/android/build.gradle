@@ -1,0 +1,305 @@
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import groovy.json.JsonSlurper
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+apply from: new File(projectDir, 'versions.gradle')
+
+group = 'expo.modules.snapcutmedia'
+version = '1.0.0'
+
+def media3Version = snapCutVersions.media3
+def lameVersion = snapCutVersions.lame
+def libsamplerateVersion = snapCutVersions.libsamplerate
+def cmakeVersion = snapCutVersions.cmake
+def ndkBaseline = snapCutVersions.ndk
+
+android {
+  namespace 'expo.modules.snapcutmedia'
+  ndkVersion ndkBaseline
+
+  defaultConfig {
+    minSdk 29
+    versionCode 1
+    versionName '1.0.0'
+    consumerProguardFiles 'consumer-rules.pro'
+    testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    buildConfigField 'String', 'SNAPCUT_MEDIA3_VERSION', "\"${media3Version}\""
+
+    ndk {
+      abiFilters 'arm64-v8a', 'x86_64'
+      if (project.hasProperty('snapcutInstrumentationAbi')) {
+        abiFilters.clear()
+        abiFilters project.property('snapcutInstrumentationAbi').toString()
+      }
+    }
+
+    externalNativeBuild {
+      cmake {
+        arguments '-DANDROID_STL=c++_shared',
+          "-DSNAPCUT_LAME_VERSION=${lameVersion}",
+          "-DSNAPCUT_LIBSAMPLERATE_VERSION=${libsamplerateVersion}"
+        cppFlags '-std=c++17'
+      }
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path file('src/main/cpp/CMakeLists.txt')
+      version cmakeVersion
+    }
+  }
+
+  buildFeatures {
+    buildConfig true
+  }
+
+  packaging {
+    jniLibs {
+      // React Android and the module CMake output both carry the NDK shared runtime.
+      // Keep this exception ABI-specific so duplicate SnapCut codec libraries still fail.
+      pickFirsts += [
+        'lib/arm64-v8a/libc++_shared.so',
+        'lib/x86_64/libc++_shared.so'
+      ]
+    }
+  }
+
+  testOptions {
+    unitTests.returnDefaultValues = true
+  }
+}
+
+repositories {
+  google()
+  mavenCentral()
+}
+
+dependencies {
+  implementation("androidx.media3:media3-common:${media3Version}") {
+    version { strictly media3Version }
+  }
+  implementation("androidx.media3:media3-exoplayer:${media3Version}") {
+    version { strictly media3Version }
+  }
+
+  testImplementation 'junit:junit:4.13.2'
+  androidTestImplementation 'androidx.test:core:1.6.1'
+  androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+  androidTestImplementation 'androidx.test:runner:1.6.2'
+}
+
+// Media3 has a single version source above. Fail instead of silently forcing a
+// transitive request to a different release.
+configurations.configureEach { configuration ->
+  configuration.resolutionStrategy.eachDependency { details ->
+    if (
+      details.requested.group == 'androidx.media3' &&
+      details.requested.version != null &&
+      details.requested.version != media3Version
+    ) {
+      throw new GradleException(
+        "SnapCut requires Media3 ${media3Version}, but ${details.requested} was requested."
+      )
+    }
+  }
+}
+
+def verifyMedia3Versions = tasks.register('verifyMedia3Versions') {
+  group = 'verification'
+  description = 'Verifies that every resolved Media3 component uses the pinned version.'
+
+  doLast {
+    def resolved = []
+    configurations.findAll { configuration ->
+      configuration.canBeResolved &&
+        (configuration.name.toLowerCase().endsWith('compileclasspath') ||
+          configuration.name.toLowerCase().endsWith('runtimeclasspath')) &&
+        !configuration.name.toLowerCase().contains('test')
+    }.each { configuration ->
+      configuration.incoming.resolutionResult.allComponents.each { component ->
+        if (
+          component.id instanceof ModuleComponentIdentifier &&
+          component.id.group == 'androidx.media3'
+        ) {
+          resolved += [module: component.id.module, version: component.id.version]
+        }
+      }
+    }
+
+    def versions = resolved.collect { it.version }.unique().sort()
+    if (resolved.isEmpty() || versions != [media3Version]) {
+      throw new GradleException(
+        "Media3 alignment failed: expected ${media3Version}, resolved ${resolved}."
+      )
+    }
+    logger.lifecycle("SnapCut Media3 alignment verified at ${media3Version}.")
+  }
+}
+
+def verifyNativePageSizeLinking = tasks.register('verifyNativePageSizeLinking') {
+  group = 'verification'
+  description = 'Verifies SnapCut shared libraries are linked for 16 KiB Android pages.'
+
+  doLast {
+    def cmakeFile = file('src/main/cpp/CMakeLists.txt')
+    def cmakeText = cmakeFile.getText(StandardCharsets.UTF_8.name())
+    def requiredPageSizeBytes = 16 * 1024
+    def requiredSnippets = [
+      "set(SNAPCUT_ANDROID_MAX_PAGE_SIZE \"${requiredPageSizeBytes}\")",
+      '"LINKER:-z,max-page-size=${SNAPCUT_ANDROID_MAX_PAGE_SIZE}"',
+      'snapcut_enable_16k_page_alignment(mp3lame)',
+      'snapcut_enable_16k_page_alignment(snapcut_codec)'
+    ]
+    def missingSnippets = requiredSnippets.findAll { !cmakeText.contains(it) }
+    if (!missingSnippets.isEmpty()) {
+      throw new GradleException(
+        "SnapCut 16 KiB native page-size linking is incomplete: missing ${missingSnippets}."
+      )
+    }
+
+    logger.lifecycle(
+      'SnapCut native page-size linking verified for libmp3lame.so and libsnapcut_codec.so.'
+    )
+  }
+}
+
+def verifyNativeCodecSources = tasks.register('verifyNativeCodecSources') {
+  group = 'verification'
+  description = 'Verifies pinned source-only native codec provenance and exclusions.'
+
+  dependsOn verifyNativePageSizeLinking
+
+  doLast {
+    def thirdPartyDir = file('src/main/cpp/third_party')
+    def lockFile = new File(thirdPartyDir, 'SOURCES.lock.json')
+    if (!lockFile.isFile()) {
+      throw new GradleException("Missing native codec source lock: ${lockFile}")
+    }
+
+    def lock = new JsonSlurper().parse(lockFile)
+    if (lock.schemaVersion != 1 || !(lock.dependencies instanceof List)) {
+      throw new GradleException('Invalid native codec source lock schema.')
+    }
+
+    def expected = [
+      LAME: [
+        version: lameVersion,
+        sha256: '3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb',
+        vendoredPath: "lame-${lameVersion}",
+        vendoredFileCount: 47,
+        vendoredTreeSha256: 'b6709a4b95c98afadf7e5517fc4f06127c741cbe40d0b072169020777879df7c',
+        vendoredTreeSha256Linux: 'b6709a4b95c98afadf7e5517fc4f06127c741cbe40d0b072169020777879df7c',
+        vendoredTreeSha256Repository: '718d5a7516db58e1e73bdb7b569c5b34931795e584b0f1a88169395d6aec8640',
+        licenseFile: "lame-${lameVersion}/COPYING"
+      ],
+      libsamplerate: [
+        version: libsamplerateVersion,
+        sha256: '3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893',
+        vendoredPath: "libsamplerate-${libsamplerateVersion}",
+        vendoredFileCount: 108,
+        vendoredTreeSha256: '2ab2c826090b3e9edb7a644d82676a6e2a0522495146859b398a709dc4e27386',
+        vendoredTreeSha256Linux: 'faa99c8c7b99cb8ef3d3d0cad0092dcfbe54de197f2d20d39063d1ab93cc851f',
+        vendoredTreeSha256Repository: '882cf409e9a24fc2bebe9fa820b76082bae0646e3a4699e5a62c9f3179d09039',
+        licenseFile: "libsamplerate-${libsamplerateVersion}/COPYING"
+      ]
+    ]
+
+    def fingerprintTree = { File sourceRoot ->
+      def files = fileTree(sourceRoot).files.findAll { it.isFile() }.sort { left, right ->
+        def leftRelative = sourceRoot.toPath().relativize(left.toPath()).toString().replace('\\', '/')
+        def rightRelative = sourceRoot.toPath().relativize(right.toPath()).toString().replace('\\', '/')
+        leftRelative <=> rightRelative
+      }
+      def digest = MessageDigest.getInstance('SHA-256')
+      files.each { sourceFile ->
+        def relativePath = sourceRoot.toPath()
+          .relativize(sourceFile.toPath())
+          .toString()
+          .replace('\\', '/')
+        digest.update(relativePath.getBytes(StandardCharsets.UTF_8))
+        digest.update([0] as byte[])
+        sourceFile.withInputStream { input ->
+          def buffer = new byte[64 * 1024]
+          int count
+          while ((count = input.read(buffer)) != -1) {
+            digest.update(buffer, 0, count)
+          }
+        }
+        digest.update([0] as byte[])
+      }
+      [
+        count: files.size(),
+        sha256: digest.digest().collect { String.format('%02x', it & 0xff) }.join()
+      ]
+    }
+
+    def lockedByName = lock.dependencies.collectEntries { dependency ->
+      [(dependency.name): dependency]
+    }
+    if ((lockedByName.keySet() as Set) != (expected.keySet() as Set)) {
+      throw new GradleException("Unexpected native codec lock entries: ${lockedByName.keySet()}")
+    }
+    expected.each { name, pin ->
+      def locked = lockedByName[name]
+      if (
+        locked.version != pin.version ||
+        locked.sha256 != pin.sha256 ||
+        locked.vendoredPath != pin.vendoredPath ||
+        locked.vendoredFileCount != pin.vendoredFileCount ||
+        locked.vendoredTreeSha256 != pin.vendoredTreeSha256 ||
+        locked.vendoredTreeSha256Linux != pin.vendoredTreeSha256Linux ||
+        locked.vendoredTreeSha256Repository != pin.vendoredTreeSha256Repository
+      ) {
+        throw new GradleException("Native codec pin mismatch for ${name}: ${locked}")
+      }
+      if (!new File(thirdPartyDir, pin.licenseFile).isFile()) {
+        throw new GradleException("Missing native codec license: ${pin.licenseFile}")
+      }
+      def sourceTree = fingerprintTree(new File(thirdPartyDir, pin.vendoredPath))
+      def isWindows = System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows')
+      def allowedTreeHashes = isWindows
+        ? [pin.vendoredTreeSha256, pin.vendoredTreeSha256Repository]
+        : [pin.vendoredTreeSha256Linux]
+      if (sourceTree.count != pin.vendoredFileCount || !allowedTreeHashes.contains(sourceTree.sha256)) {
+        throw new GradleException(
+          "Vendored source tree mismatch for ${name}: expected " +
+            "${pin.vendoredFileCount}/${allowedTreeHashes}, got " +
+            "${sourceTree.count}/${sourceTree.sha256}."
+        )
+      }
+    }
+
+    def forbiddenBinaries = fileTree(thirdPartyDir) {
+      include '**/*.so', '**/*.a', '**/*.o', '**/*.aar', '**/*.dll', '**/*.lib', '**/*.exe'
+    }.files
+    if (!forbiddenBinaries.isEmpty()) {
+      throw new GradleException("Prebuilt native artifacts are forbidden: ${forbiddenBinaries}")
+    }
+
+    def lameDir = new File(thirdPartyDir, "lame-${lameVersion}")
+    def forbiddenLameSources = [
+      new File(lameDir, 'mpglib'),
+      new File(lameDir, 'frontend'),
+      new File(lameDir, 'libmp3lame/mpglib_interface.c')
+    ].findAll { it.exists() }
+    if (!forbiddenLameSources.isEmpty()) {
+      throw new GradleException("Decoder/CLI LAME sources are forbidden: ${forbiddenLameSources}")
+    }
+
+    logger.lifecycle(
+      "SnapCut native codecs verified: LAME ${lameVersion}, libsamplerate ${libsamplerateVersion}."
+    )
+  }
+}
+
+tasks.named('check').configure {
+  dependsOn verifyMedia3Versions
+  dependsOn verifyNativeCodecSources
+}

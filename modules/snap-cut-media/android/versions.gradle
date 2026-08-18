@@ -1,0 +1,7 @@
+ext.snapCutVersions = [
+  media3: '1.10.1',
+  lame: '4.0',
+  libsamplerate: '0.2.2',
+  cmake: '3.22.1',
+  ndk: '27.1.12297006',
+]

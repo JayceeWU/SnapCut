@@ -1,5 +1,9 @@
-import { parseSnapCutProject } from '@/domain/migrations';
-import { projectIndexSchema, sourceFileSchema, waveformFileSchema } from '@/domain/schemas';
+import {
+  projectIndexSchema,
+  snapCutProjectSchema,
+  sourceFileSchema,
+  waveformFileSchema,
+} from '@/domain/schemas';
 import { sourceMetadataMatchesProjectSource } from '@/domain/sourceRelations';
 import { compositionDurationMs } from '@/domain/timeline';
 import type { SnapCutProject } from '@/domain/types';
@@ -368,7 +372,7 @@ export class RecoveryService {
     const project = await this.recoverJson(
       destinationUri,
       (raw) => {
-        const project = parseSnapCutProject(raw);
+        const project = snapCutProjectSchema.parse(raw);
         if (project.id !== entry.name) {
           throw new Error('Project ID and directory name differ.');
         }
@@ -377,24 +381,7 @@ export class RecoveryService {
       (temporary) => this.journalProvesCommit(entry.uri, temporary),
       diagnostics,
     );
-    if (project === null) return null;
-
-    const persistedVersion = await this.readPersistedSchemaVersion(destinationUri);
-    if (persistedVersion !== project.schemaVersion) {
-      return this.json.write(destinationUri, project, (raw) => parseSnapCutProject(raw));
-    }
     return project;
-  }
-
-  private async readPersistedSchemaVersion(uri: string): Promise<number | null> {
-    try {
-      const raw = JSON.parse(await this.layout.fileSystem.readText(uri)) as unknown;
-      if (typeof raw !== 'object' || raw === null || !('schemaVersion' in raw)) return null;
-      const version = (raw as { schemaVersion?: unknown }).schemaVersion;
-      return typeof version === 'number' ? version : null;
-    } catch {
-      return null;
-    }
   }
 
   private async journalProvesCommit(

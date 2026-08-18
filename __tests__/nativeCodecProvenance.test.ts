@@ -5,7 +5,7 @@ import path from 'node:path';
 import { describe, expect, test } from '@jest/globals';
 
 interface LockedCodecSource {
-  name: 'libFLAC' | 'LAME' | 'libsamplerate';
+  name: 'LAME' | 'libsamplerate';
   version: string;
   sourceUrl: string;
   archiveBytes: number;
@@ -30,12 +30,6 @@ const THIRD_PARTY_ROOT = path.resolve(
 );
 
 const EXPECTED_PINS = {
-  libFLAC: {
-    version: '1.5.0',
-    archiveBytes: 1_078_872,
-    sha256: 'f2c1c76592a82ffff8413ba3c4a1299b6c7ab06c734dee03fd88630485c2b920',
-    license: 'flac-1.5.0/COPYING.Xiph',
-  },
   LAME: {
     version: '4.0',
     archiveBytes: 1_496_810,

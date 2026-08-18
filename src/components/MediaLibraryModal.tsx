@@ -1,4 +1,13 @@
-import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 
 import {
@@ -22,11 +31,12 @@ interface MediaLibraryModalProps {
   previewSourceId: string | null;
   previewLoading: boolean;
   previewPlaying: boolean;
+  compareReadySourceIds?: ReadonlySet<string>;
   inUseSourceIds?: ReadonlySet<string>;
   deletingSourceId?: string | null;
   operationError?: string | null;
-  onAddClip: (source: SnapCutSource) => void;
   onClose: () => void;
+  onCompare: (source: SnapCutSource) => void;
   onDelete: (source: SnapCutSource) => void;
   onImport: () => void;
   onDismissError?: (() => void) | undefined;
@@ -34,12 +44,46 @@ interface MediaLibraryModalProps {
   onRename: (source: SnapCutSource) => void;
 }
 
-function PreviewIcon({ pause }: { pause: boolean }) {
+function PreviewIcon({ pause, color }: { pause: boolean; color: string }) {
+  return (
+    <Svg height={22} viewBox="0 0 24 24" width={22}>
+      <Path d={pause ? 'M7 5h4v14H7V5Zm6 0h4v14h-4V5Z' : 'M7 4v16l12-8L7 4Z'} fill={color} />
+    </Svg>
+  );
+}
+
+function RenameIcon({ color }: { color: string }) {
   return (
     <Svg height={22} viewBox="0 0 24 24" width={22}>
       <Path
-        d={pause ? 'M7 5h4v14H7V5Zm6 0h4v14h-4V5Z' : 'M7 4v16l12-8L7 4Z'}
-        fill={colors.textPrimary}
+        d="M4 16.5V20h3.5L18.1 9.4l-3.5-3.5L4 16.5Zm16.7-9.9a1 1 0 0 0 0-1.4l-1.9-1.9a1 1 0 0 0-1.4 0l-1.5 1.5 3.5 3.5 1.3-1.7Z"
+        fill={color}
+      />
+    </Svg>
+  );
+}
+
+function CompareIcon({ color }: { color: string }) {
+  return (
+    <Svg height={22} viewBox="0 0 24 24" width={22}>
+      <Path
+        d="M4 7h2l1.5-3 3 6 2-4 2.5 5H20M4 17h3l1.5-3 2.5 5 2.5-6 2 4H20"
+        fill="none"
+        stroke={color}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={1.8}
+      />
+    </Svg>
+  );
+}
+
+function DeleteIcon({ color }: { color: string }) {
+  return (
+    <Svg height={22} viewBox="0 0 24 24" width={22}>
+      <Path
+        d="M7 21c-1.1 0-2-.9-2-2V6h14v13c0 1.1-.9 2-2 2H7Zm2-4h2V9H9v8Zm4 0h2V9h-2v8ZM4 5V3h5l1-1h4l1 1h5v2H4Z"
+        fill={color}
       />
     </Svg>
   );
@@ -52,11 +96,12 @@ export function MediaLibraryModal({
   previewSourceId,
   previewLoading,
   previewPlaying,
+  compareReadySourceIds = new Set<string>(),
   inUseSourceIds = new Set<string>(),
   deletingSourceId = null,
   operationError = null,
-  onAddClip,
   onClose,
+  onCompare,
   onDelete,
   onImport,
   onDismissError,
@@ -91,14 +136,11 @@ export function MediaLibraryModal({
           testID="media-library-dialog"
         >
           <View style={styles.headingRow}>
-            <View style={styles.headingCopy}>
-              <Text accessibilityRole="header" style={styles.title}>
-                Media
-              </Text>
-              <Text style={styles.subtitle}>Preview sources or add a range to Clips.</Text>
-            </View>
+            <Text accessibilityRole="header" style={styles.title}>
+              Sources
+            </Text>
             <Pressable
-              accessibilityLabel="Close media library"
+              accessibilityLabel="Close sources"
               accessibilityRole="button"
               onPress={onClose}
               style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
@@ -136,6 +178,7 @@ export function MediaLibraryModal({
                 const activePreview = previewSourceId === source.id;
                 const previewBusy = activePreview && previewLoading;
                 const sourceInUse = inUseSourceIds.has(source.id);
+                const compareReady = compareReadySourceIds.has(source.id);
                 const deleting = deletingSourceId === source.id;
                 const sourceBusy = previewBusy || deleting;
                 const previewLabel = previewBusy
@@ -144,16 +187,20 @@ export function MediaLibraryModal({
                     ? `Pause ${source.displayName}`
                     : `Preview ${source.displayName}`;
                 return (
-                  <View key={source.id} style={styles.sourceCard}>
-                    <View style={styles.sourceHeading}>
-                      <View style={styles.sourceCopy}>
-                        <Text numberOfLines={1} style={styles.sourceName}>
-                          {source.displayName}
-                        </Text>
-                        <Text style={styles.sourceSummary}>
-                          {formatDuration(source.durationMs)}
-                        </Text>
-                      </View>
+                  <View
+                    key={source.id}
+                    style={styles.sourceCard}
+                    testID={`source-card-${source.id}`}
+                  >
+                    <View style={styles.sourceCopy} testID={`source-copy-${source.id}`}>
+                      <Text ellipsizeMode="tail" numberOfLines={1} style={styles.sourceName}>
+                        {source.displayName}
+                      </Text>
+                      <Text numberOfLines={1} style={styles.sourceSummary}>
+                        {formatDuration(source.durationMs)}
+                      </Text>
+                    </View>
+                    <View style={styles.actions} testID={`source-actions-${source.id}`}>
                       <Pressable
                         accessibilityLabel={previewLabel}
                         accessibilityRole="button"
@@ -163,25 +210,54 @@ export function MediaLibraryModal({
                         style={({ pressed }) => [
                           styles.previewAction,
                           activePreview && styles.activeAction,
+                          sourceBusy && styles.disabledAction,
                           pressed && styles.pressed,
                         ]}
+                        testID={`source-preview-action-${source.id}`}
                       >
                         {previewBusy ? (
-                          <Text style={styles.loadingGlyph}>…</Text>
+                          <ActivityIndicator color={colors.textPrimary} size="small" />
                         ) : (
-                          <PreviewIcon pause={activePreview && previewPlaying} />
+                          <PreviewIcon
+                            color={sourceBusy ? colors.disabledText : colors.textPrimary}
+                            pause={activePreview && previewPlaying}
+                          />
                         )}
                       </Pressable>
-                    </View>
-                    <View style={styles.actions}>
+                      <Pressable
+                        accessibilityHint={
+                          compareReady ? undefined : 'Wait for this source waveform to finish'
+                        }
+                        accessibilityLabel={`Compare ${source.displayName}`}
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: !compareReady || sourceBusy }}
+                        disabled={!compareReady || sourceBusy}
+                        onPress={() => onCompare(source)}
+                        style={({ pressed }) => [
+                          styles.actionButton,
+                          (!compareReady || sourceBusy) && styles.disabledAction,
+                          pressed && styles.pressed,
+                        ]}
+                        testID={`source-compare-action-${source.id}`}
+                      >
+                        <CompareIcon
+                          color={!compareReady || sourceBusy ? colors.disabledText : colors.focus}
+                        />
+                      </Pressable>
                       <Pressable
                         accessibilityLabel={`Rename ${source.displayName}`}
                         accessibilityRole="button"
+                        accessibilityState={{ disabled: sourceBusy }}
                         disabled={sourceBusy}
                         onPress={() => onRename(source)}
-                        style={({ pressed }) => [styles.textAction, pressed && styles.pressed]}
+                        style={({ pressed }) => [
+                          styles.actionButton,
+                          sourceBusy && styles.disabledAction,
+                          pressed && styles.pressed,
+                        ]}
+                        testID={`source-rename-action-${source.id}`}
                       >
-                        <Text style={styles.actionLabel}>Rename</Text>
+                        <RenameIcon color={sourceBusy ? colors.disabledText : colors.focus} />
                       </Pressable>
                       <Pressable
                         accessibilityHint={
@@ -192,26 +268,20 @@ export function MediaLibraryModal({
                         accessibilityState={{ busy: deleting, disabled: sourceInUse || sourceBusy }}
                         disabled={sourceInUse || sourceBusy}
                         onPress={() => confirmDelete(source)}
-                        style={({ pressed }) => [styles.textAction, pressed && styles.pressed]}
+                        style={({ pressed }) => [
+                          styles.actionButton,
+                          (sourceInUse || sourceBusy) && styles.disabledAction,
+                          pressed && styles.pressed,
+                        ]}
+                        testID={`source-delete-action-${source.id}`}
                       >
-                        <Text
-                          style={[
-                            styles.actionLabel,
-                            styles.deleteLabel,
-                            sourceInUse && styles.disabledLabel,
-                          ]}
-                        >
-                          {sourceInUse ? 'In use' : deleting ? 'Deleting…' : 'Delete'}
-                        </Text>
-                      </Pressable>
-                      <Pressable
-                        accessibilityLabel={`Add clip from ${source.displayName}`}
-                        accessibilityRole="button"
-                        disabled={sourceBusy}
-                        onPress={() => onAddClip(source)}
-                        style={({ pressed }) => [styles.addAction, pressed && styles.pressed]}
-                      >
-                        <Text style={styles.addActionLabel}>Add Clip</Text>
+                        {deleting ? (
+                          <ActivityIndicator color={colors.disabledText} size="small" />
+                        ) : (
+                          <DeleteIcon
+                            color={sourceInUse || sourceBusy ? colors.disabledText : colors.error}
+                          />
+                        )}
                       </Pressable>
                     </View>
                   </View>
@@ -246,15 +316,9 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginBottom: spacing.md,
   },
-  headingCopy: {
-    flex: 1,
-  },
   title: {
     ...typography.screenTitle,
-  },
-  subtitle: {
-    ...typography.caption,
-    marginTop: spacing.xxs,
+    flex: 1,
   },
   iconButton: {
     width: minimumTouchTarget,
@@ -288,13 +352,10 @@ const styles = StyleSheet.create({
   },
   sourceCard: {
     ...layout.card,
-    padding: spacing.sm,
-    gap: spacing.xs,
-  },
-  sourceHeading: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    padding: spacing.sm,
+    gap: spacing.xxs,
   },
   sourceCopy: {
     flex: 1,
@@ -311,6 +372,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
+    flexShrink: 0,
     gap: spacing.xxs,
   },
   previewAction: {
@@ -327,36 +389,18 @@ const styles = StyleSheet.create({
     borderColor: colors.focus,
     backgroundColor: colors.soft,
   },
-  loadingGlyph: {
-    color: colors.textPrimary,
-    fontSize: 20,
-  },
-  textAction: {
-    minHeight: minimumTouchTarget,
+  actionButton: {
+    width: minimumTouchTarget,
+    height: minimumTouchTarget,
+    alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: spacing.sm,
     borderRadius: radii.md,
+    borderColor: colors.border,
+    borderWidth: 1,
+    backgroundColor: colors.surface,
   },
-  actionLabel: {
-    ...typography.label,
-    color: colors.focus,
-  },
-  deleteLabel: {
-    color: colors.error,
-  },
-  disabledLabel: {
-    color: colors.disabledText,
-  },
-  addAction: {
-    minHeight: minimumTouchTarget,
-    justifyContent: 'center',
-    paddingHorizontal: spacing.md,
-    borderRadius: radii.md,
-    backgroundColor: colors.accent,
-  },
-  addActionLabel: {
-    ...typography.label,
-    color: colors.background,
+  disabledAction: {
+    opacity: 0.55,
   },
   pressed: {
     opacity: 0.78,

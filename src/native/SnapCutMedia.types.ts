@@ -49,9 +49,6 @@ export const SNAP_CUT_MEDIA_ERROR_CODES = [
   'AAC_VERIFICATION_FAILED',
   'EXPORT_DECODE_FAILED',
   'EXPORT_RESAMPLE_FAILED',
-  'FLAC_ENCODER_INIT_FAILED',
-  'FLAC_ENCODER_FAILED',
-  'FLAC_VERIFICATION_FAILED',
   'MP3_ENCODER_INIT_FAILED',
   'MP3_ENCODER_FAILED',
   'MP3_VERIFICATION_FAILED',
@@ -71,7 +68,6 @@ export interface CodecLibraryStatus {
 export interface CodecBuildInfo {
   moduleVersion: '1.0.0';
   media3: CodecLibraryStatus;
-  flac: CodecLibraryStatus;
   lame: CodecLibraryStatus;
   libsamplerate: CodecLibraryStatus;
   nativeCodecBridgeLoaded: boolean;
@@ -211,14 +207,8 @@ export interface ExportAudioResult {
   sampleRateHz: number;
   channelCount: 1 | 2;
   bitrateKbps: 160 | 320 | null;
-  bitsPerSample: 24 | null;
   maxBoundaryAdjustmentMs: number;
   fileSizeBytes: number;
-}
-
-export interface ShareExportRequest {
-  contentUri: string;
-  format: SnapCutExportFormat;
 }
 
 export interface SnapCutMediaApi {
@@ -241,7 +231,6 @@ export interface SnapCutMediaApi {
   cancelExportPreflight(jobId: string): Promise<void>;
   exportAudio(request: ExportAudioRequest): Promise<ExportAudioResult>;
   cancelExport(jobId: string): Promise<void>;
-  shareExport(request: ShareExportRequest): Promise<void>;
 }
 
 export interface SnapCutMediaSubscription {

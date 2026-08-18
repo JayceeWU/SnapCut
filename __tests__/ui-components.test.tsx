@@ -16,7 +16,9 @@ import { copy } from '@/constants';
 import type { SnapCutProject } from '@/domain';
 
 const projectFixture: SnapCutProject = {
-  schemaVersion: 7,
+  schemaVersion: 9,
+  crossfades: [],
+  sourceComparisons: [],
   namePromptCompleted: true,
   id: '11111111-1111-4111-8111-111111111111',
   name: 'Repair me',
@@ -131,27 +133,24 @@ describe('shared UI components', () => {
     expect(screen.getByTestId('confirm-delete-modal').props.onRequestClose).toBeUndefined();
   });
 
-  it('counts source names by Unicode code point up to 255 characters', async () => {
+  it('limits source names to six Unicode code points while typing and pasting', async () => {
     const onSubmit = jest.fn();
     const screen = await render(
-      <SourceNameModal initialName="Source 1" onCancel={jest.fn()} onSubmit={onSubmit} visible />,
+      <SourceNameModal initialName="S1" onCancel={jest.fn()} onSubmit={onSubmit} visible />,
     );
     const field = screen.getByLabelText('Source name');
-    const validName = '🎵'.repeat(255);
-    await fireEvent.changeText(field, validName);
+    const validName = '🎵'.repeat(6);
+    await fireEvent.changeText(field, `${validName}extra`);
+    expect(field.props.value).toBe(validName);
     await fireEvent.press(screen.getByRole('button', { name: 'Save' }));
     expect(onSubmit).toHaveBeenCalledWith(validName);
-
-    await fireEvent.changeText(field, '🎵'.repeat(256));
-    await fireEvent.press(screen.getByRole('button', { name: 'Save' }));
-    expect(screen.getByText('Use 255 characters or fewer.')).toBeTruthy();
   });
 
-  it('uses a fixed source-name title even when the existing name is very long', async () => {
-    const longName = 'A'.repeat(255);
+  it('uses a fixed source-name title', async () => {
+    const sourceName = 'ABCDEF';
     const screen = await render(
       <SourceNameModal
-        initialName={longName}
+        initialName={sourceName}
         onCancel={jest.fn()}
         onSubmit={jest.fn()}
         title="Rename Source"
@@ -160,7 +159,7 @@ describe('shared UI components', () => {
     );
 
     expect(screen.getByRole('header', { name: 'Rename Source' })).toBeTruthy();
-    expect(screen.queryByRole('header', { name: longName })).toBeNull();
+    expect(screen.queryByRole('header', { name: sourceName })).toBeNull();
   });
 
   it('renders compact native-clock playback state and session history actions', async () => {

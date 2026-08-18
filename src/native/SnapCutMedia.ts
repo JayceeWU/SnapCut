@@ -189,10 +189,6 @@ const exportAudioRequestSchema = z
       }
     }
   });
-const shareExportRequestSchema = z
-  .object({ contentUri, format: snapCutExportFormatSchema })
-  .strict();
-
 const healthSchema = z
   .object({
     moduleName: z.literal('SnapCutMedia'),
@@ -210,7 +206,6 @@ const codecBuildInfoSchema = z
   .object({
     moduleVersion: z.literal('1.0.0'),
     media3: libraryStatusSchema,
-    flac: libraryStatusSchema,
     lame: libraryStatusSchema,
     libsamplerate: libraryStatusSchema,
     nativeCodecBridgeLoaded: z.boolean(),
@@ -273,7 +268,6 @@ const exportAudioResultSchema = z
     sampleRateHz: positiveInteger,
     channelCount,
     bitrateKbps: z.union([z.literal(160), z.literal(320)]).nullable(),
-    bitsPerSample: z.literal(24).nullable(),
     maxBoundaryAdjustmentMs: nonNegativeInteger,
     fileSizeBytes: positiveInteger,
   })
@@ -474,11 +468,6 @@ export function createSnapCutMediaClient(
     },
     async cancelExport(jobId) {
       await getNativeModule().cancelExport(parseNative(nonEmptyId, jobId, 'cancelExport jobId'));
-    },
-    async shareExport(request) {
-      await getNativeModule().shareExport(
-        parseNative(shareExportRequestSchema, request, 'shareExport request'),
-      );
     },
     addEventListener<EventName extends NativeEventName>(
       eventName: EventName,

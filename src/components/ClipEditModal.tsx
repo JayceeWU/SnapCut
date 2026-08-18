@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -12,10 +12,11 @@ import {
 } from 'react-native';
 
 import { colors, layout, radii, spacing, typography } from '@/constants';
-import type { SnapCutClip, SnapCutSource } from '@/domain';
+import type { SnapCutClip, SnapCutSource, WaveformFile } from '@/domain';
 import { formatTimelineTime, parseExactTime } from '@/utils/time';
 
 import { AppButton } from './AppButton';
+import { ClipSourceWaveform } from './ClipSourceWaveform';
 import { ErrorBanner } from './ErrorBanner';
 
 export interface ClipRangeDraft {
@@ -24,12 +25,12 @@ export interface ClipRangeDraft {
   endMs: number;
 }
 
-export interface ClipRangeValidationResult {
+interface ClipRangeValidationResult {
   value: ClipRangeDraft | null;
   message: string | null;
 }
 
-export interface ClipTimeParts {
+interface ClipTimeParts {
   minutes: string;
   seconds: string;
   milliseconds: string;
@@ -145,9 +146,18 @@ interface ClipEditModalProps {
   initialSourceId?: string | null;
   busy?: boolean;
   operationError?: string | null;
+  playbackLoading?: boolean;
+  playbackPlaying?: boolean;
+  playbackPositionMs?: number | null;
+  previewSourceId?: string | null;
+  waveformsBySourceId?: Readonly<Record<string, WaveformFile | null>>;
   onCancel: () => void;
   onDelete?: (() => void) | undefined;
   onDismissError?: (() => void) | undefined;
+  onPausePreview?: (() => void) | undefined;
+  onPreview?: ((source: SnapCutSource, positionMs: number) => void) | undefined;
+  onPreviewSourceChange?: (() => void) | undefined;
+  onSeekPreview?: ((positionMs: number) => void) | undefined;
   onSave: (draft: ClipRangeDraft) => void;
 }
 
@@ -167,6 +177,9 @@ interface TimePartsEditorProps {
   invalid: boolean;
   testIdPrefix: string;
   onChange: (value: ClipTimeParts) => void;
+  onFocus?: (() => void) | undefined;
+  onSet: () => void;
+  setDisabled: boolean;
   onSubmitEditing?: (() => void) | undefined;
 }
 
@@ -181,6 +194,9 @@ function TimePartsEditor({
   invalid,
   testIdPrefix,
   onChange,
+  onFocus,
+  onSet,
+  setDisabled,
   onSubmitEditing,
 }: TimePartsEditorProps) {
   const parts = [
@@ -196,7 +212,24 @@ function TimePartsEditor({
 
   return (
     <View>
-      <Text style={styles.label}>{label}</Text>
+      <View style={styles.timeEditorHeader}>
+        <Text style={styles.label}>{label}</Text>
+        <Pressable
+          accessibilityLabel={`Set ${label.toLowerCase()} to play position`}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: busy || setDisabled }}
+          disabled={busy || setDisabled}
+          onPress={onSet}
+          style={({ pressed }) => [
+            styles.setButton,
+            (busy || setDisabled) && styles.disabled,
+            pressed && !busy && !setDisabled && styles.pressed,
+          ]}
+          testID={`set-${testIdPrefix}-to-cursor`}
+        >
+          <Text style={styles.setButtonText}>Set</Text>
+        </Pressable>
+      </View>
       <View style={styles.timePartsRow}>
         {parts.map((part) => (
           <View key={part.key} style={styles.timePartField}>
@@ -211,6 +244,7 @@ function TimePartsEditor({
               onChangeText={(input) =>
                 onChange({ ...value, [part.key]: digitsOnly(input, part.maxLength) })
               }
+              onFocus={onFocus}
               {...(part.key === 'milliseconds' && onSubmitEditing
                 ? { onSubmitEditing, returnKeyType: 'done' as const }
                 : {})}
@@ -236,9 +270,18 @@ function VisibleClipEditModal({
   initialSourceId = null,
   busy = false,
   operationError = null,
+  playbackLoading = false,
+  playbackPlaying = false,
+  playbackPositionMs = null,
+  previewSourceId = null,
+  waveformsBySourceId = {},
   onCancel,
   onDelete,
   onDismissError,
+  onPausePreview = () => undefined,
+  onPreview = () => undefined,
+  onPreviewSourceChange = () => undefined,
+  onSeekPreview = () => undefined,
   onSave,
 }: ClipEditModalProps) {
   const firstSource = useMemo(
@@ -251,11 +294,44 @@ function VisibleClipEditModal({
     timePartsFromMilliseconds(clip?.endMs ?? firstSource?.durationMs ?? 0),
   );
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
+  const [cursorMs, setCursorMs] = useState(clip?.startMs ?? 0);
+  const scrollRef = useRef<ScrollView>(null);
+  const selectedSource = sources.find(({ id }) => id === sourceId) ?? firstSource;
+  const previewActive = previewSourceId === sourceId;
+  const displayedCursorMs = Math.min(
+    Math.max(
+      Math.round(previewActive && playbackPositionMs !== null ? playbackPositionMs : cursorMs),
+      0,
+    ),
+    selectedSource?.durationMs ?? 0,
+  );
 
   const chooseSource = (source: SnapCutSource) => {
     setSourceId(source.id);
     setStartInput(timePartsFromMilliseconds(0));
     setEndInput(timePartsFromMilliseconds(source.durationMs));
+    setCursorMs(0);
+    setValidationMessage(null);
+    onPreviewSourceChange();
+  };
+
+  const setBoundaryFromCursor = (boundary: 'start' | 'end') => {
+    let otherMs: number;
+    try {
+      otherMs = parseTimeParts(boundary === 'start' ? endInput : startInput);
+    } catch {
+      setValidationMessage('Enter a valid time for the other clip boundary first.');
+      return;
+    }
+    if (
+      (boundary === 'start' && displayedCursorMs > otherMs - 100) ||
+      (boundary === 'end' && displayedCursorMs < otherMs + 100)
+    ) {
+      setValidationMessage('Clip duration must be at least 100 milliseconds.');
+      return;
+    }
+    if (boundary === 'start') setStartInput(timePartsFromMilliseconds(displayedCursorMs));
+    else setEndInput(timePartsFromMilliseconds(displayedCursorMs));
     setValidationMessage(null);
   };
 
@@ -277,7 +353,7 @@ function VisibleClipEditModal({
       visible={visible}
     >
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.overlay}
       >
         <Pressable
@@ -289,89 +365,125 @@ function VisibleClipEditModal({
           testID="clip-editor-backdrop"
         />
         <View accessibilityViewIsModal style={styles.dialog} testID="clip-editor-dialog">
-          <Text accessibilityRole="header" style={styles.title}>
-            {clip ? 'Edit Clip' : 'Add Clip'}
-          </Text>
-          {operationError ? (
-            <ErrorBanner
-              message={operationError}
-              {...(onDismissError ? { onDismiss: onDismissError } : {})}
-            />
-          ) : null}
-
-          <Text style={styles.label}>Source</Text>
           <ScrollView
-            contentContainerStyle={styles.sourceList}
-            horizontal
+            automaticallyAdjustKeyboardInsets
+            contentContainerStyle={styles.dialogContent}
             keyboardShouldPersistTaps="handled"
-            showsHorizontalScrollIndicator={false}
+            ref={scrollRef}
+            showsVerticalScrollIndicator={false}
           >
-            {sources.map((source) => {
-              const selected = source.id === sourceId;
-              return (
-                <Pressable
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: selected, disabled: busy }}
-                  disabled={busy}
-                  key={source.id}
-                  onPress={() => chooseSource(source)}
-                  style={({ pressed }) => [
-                    styles.sourceChoice,
-                    selected && styles.selectedSource,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text numberOfLines={1} style={styles.sourceChoiceName}>
-                    {source.displayName}
-                  </Text>
-                  <Text style={styles.sourceDuration}>{formatTimelineTime(source.durationMs)}</Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-
-          <View style={styles.timeEditors}>
-            <TimePartsEditor
-              busy={busy}
-              invalid={validationMessage !== null}
-              label="Start"
-              onChange={(value) => {
-                setStartInput(value);
-                setValidationMessage(null);
-              }}
-              testIdPrefix="clip-start"
-              value={startInput}
-            />
-            <TimePartsEditor
-              busy={busy}
-              invalid={validationMessage !== null}
-              label="End"
-              onChange={(value) => {
-                setEndInput(value);
-                setValidationMessage(null);
-              }}
-              onSubmitEditing={submit}
-              testIdPrefix="clip-end"
-              value={endInput}
-            />
-          </View>
-          {validationMessage ? (
-            <Text accessibilityLiveRegion="polite" style={styles.validation}>
-              {validationMessage}
+            <Text accessibilityRole="header" style={styles.title}>
+              {clip ? 'Edit Clip' : 'Add Clip'}
             </Text>
-          ) : null}
+            {operationError ? (
+              <ErrorBanner
+                message={operationError}
+                {...(onDismissError ? { onDismiss: onDismissError } : {})}
+              />
+            ) : null}
 
-          <View style={styles.actions}>
-            {clip && onDelete ? (
-              <AppButton disabled={busy} label="Delete" onPress={onDelete} variant="danger" />
-            ) : (
-              <View />
-            )}
-            <View style={styles.primaryActions}>
-              <AppButton disabled={busy} label="Cancel" onPress={onCancel} variant="ghost" />
-              <AppButton loading={busy} label="Save" onPress={submit} />
+            <Text style={styles.label}>Source</Text>
+            <ScrollView
+              contentContainerStyle={styles.sourceList}
+              horizontal
+              keyboardShouldPersistTaps="handled"
+              showsHorizontalScrollIndicator={false}
+            >
+              {sources.map((source) => {
+                const selected = source.id === sourceId;
+                return (
+                  <Pressable
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: selected, disabled: busy }}
+                    disabled={busy}
+                    key={source.id}
+                    onPress={() => chooseSource(source)}
+                    style={({ pressed }) => [
+                      styles.sourceChoice,
+                      selected && styles.selectedSource,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text numberOfLines={1} style={styles.sourceChoiceName}>
+                      {source.displayName}
+                    </Text>
+                    <Text style={styles.sourceDuration}>
+                      {formatTimelineTime(source.durationMs)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            {selectedSource ? (
+              <ClipSourceWaveform
+                cursorMs={displayedCursorMs}
+                disabled={busy}
+                durationMs={selectedSource.durationMs}
+                loading={previewActive && playbackLoading}
+                onCursorChange={setCursorMs}
+                onScrubEnd={(positionMs) => {
+                  setCursorMs(positionMs);
+                  onSeekPreview(positionMs);
+                }}
+                onScrubStart={() => {
+                  setCursorMs(displayedCursorMs);
+                  onPausePreview();
+                }}
+                onTogglePlayback={() => onPreview(selectedSource, displayedCursorMs)}
+                playing={previewActive && playbackPlaying}
+                waveform={waveformsBySourceId[selectedSource.id] ?? null}
+              />
+            ) : null}
+
+            <View style={styles.timeEditors}>
+              <TimePartsEditor
+                busy={busy}
+                invalid={validationMessage !== null}
+                label="Start"
+                onChange={(value) => {
+                  setStartInput(value);
+                  setValidationMessage(null);
+                }}
+                onSet={() => setBoundaryFromCursor('start')}
+                setDisabled={!selectedSource}
+                testIdPrefix="clip-start"
+                value={startInput}
+              />
+              <TimePartsEditor
+                busy={busy}
+                invalid={validationMessage !== null}
+                label="End"
+                onChange={(value) => {
+                  setEndInput(value);
+                  setValidationMessage(null);
+                }}
+                onFocus={() => scrollRef.current?.scrollToEnd({ animated: true })}
+                onSet={() => setBoundaryFromCursor('end')}
+                setDisabled={!selectedSource}
+                onSubmitEditing={submit}
+                testIdPrefix="clip-end"
+                value={endInput}
+              />
             </View>
-          </View>
+            {validationMessage ? (
+              <Text accessibilityLiveRegion="polite" style={styles.validation}>
+                {validationMessage}
+              </Text>
+            ) : null}
+
+            <View style={styles.actions}>
+              {clip && onDelete ? (
+                <AppButton disabled={busy} label="Delete" onPress={onDelete} variant="danger" />
+              ) : (
+                <View />
+              )}
+              <View style={styles.primaryActions}>
+                <AppButton disabled={busy} label="Cancel" onPress={onCancel} variant="ghost" />
+                <AppButton loading={busy} label="Save" onPress={submit} />
+              </View>
+            </View>
+          </ScrollView>
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -397,7 +509,12 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 520,
     alignSelf: 'center',
+    maxHeight: '92%',
+    overflow: 'hidden',
+  },
+  dialogContent: {
     padding: spacing.md,
+    gap: spacing.sm,
   },
   title: {
     ...typography.screenTitle,
@@ -405,7 +522,24 @@ const styles = StyleSheet.create({
   },
   label: {
     ...typography.label,
-    marginBottom: spacing.xs,
+  },
+  timeEditorHeader: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  setButton: {
+    minWidth: 64,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.md,
+    backgroundColor: colors.soft,
+  },
+  setButtonText: {
+    ...typography.label,
+    color: colors.textPrimary,
   },
   sourceList: {
     gap: spacing.xs,
@@ -484,5 +618,8 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.78,
+  },
+  disabled: {
+    opacity: 0.45,
   },
 });

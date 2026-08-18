@@ -1,22 +1,11 @@
-import { CURRENT_PROJECT_SCHEMA_VERSION, DEFAULT_SELECTION_DURATION_MS } from './constants';
+import { CURRENT_PROJECT_SCHEMA_VERSION, MAX_SOURCE_NAME_CODE_POINTS } from './constants';
 import { DomainError } from './errors';
 import { createDefaultProjectName, normalizeProjectName } from './naming';
-import {
-  isoDateTimeSchema,
-  projectIndexFileV1Schema,
-  snapCutProjectSchema,
-  snapCutSourceSchema,
-} from './schemas';
+import { isoDateTimeSchema, projectIndexSchema, snapCutProjectSchema } from './schemas';
 import { compositionDurationMs } from './timeline';
-import type {
-  ProjectIndexEntry,
-  ProjectIndexFileV1,
-  SnapCutExportRecord,
-  SnapCutProject,
-  SnapCutSource,
-} from './types';
+import type { SnapCutProject, SnapCutSource } from './types';
 
-export interface CreateProjectInput {
+interface CreateProjectInput {
   id: string;
   name?: string | null;
   now: string | Date;
@@ -40,8 +29,10 @@ export function createProject(input: CreateProjectInput): SnapCutProject {
     updatedAt: now,
     sources: [],
     clips: [],
+    crossfades: [],
+    sourceComparisons: [],
     lastExport: null,
-  }) as SnapCutProject;
+  });
 }
 
 export function renameProject(
@@ -49,7 +40,7 @@ export function renameProject(
   name: string,
   updatedAt = projectInput.updatedAt,
 ): SnapCutProject {
-  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+  const project = projectInput;
   const normalizedName = name.trim();
   if (normalizedName.length === 0) {
     throw new DomainError('INVALID_PROJECT_NAME', 'Project name cannot be blank');
@@ -59,7 +50,7 @@ export function renameProject(
     name: normalizeProjectName(normalizedName),
     namePromptCompleted: true,
     updatedAt,
-  }) as SnapCutProject;
+  });
 }
 
 export function shouldPromptForProjectName(project: SnapCutProject): boolean {
@@ -70,12 +61,12 @@ export function completeProjectNamePrompt(
   projectInput: SnapCutProject,
   updatedAt = projectInput.updatedAt,
 ): SnapCutProject {
-  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+  const project = projectInput;
   return snapCutProjectSchema.parse({
     ...project,
     namePromptCompleted: true,
     updatedAt,
-  }) as SnapCutProject;
+  });
 }
 
 export function addSource(
@@ -83,8 +74,8 @@ export function addSource(
   sourceInput: SnapCutSource,
   updatedAt = projectInput.updatedAt,
 ): SnapCutProject {
-  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
-  const source = snapCutSourceSchema.parse(sourceInput) as SnapCutSource;
+  const project = projectInput;
+  const source = sourceInput;
   if (project.sources.some(({ id }) => id === source.id)) {
     throw new DomainError('DUPLICATE_ID', `Source ID already exists: ${source.id}`);
   }
@@ -92,7 +83,7 @@ export function addSource(
     ...project,
     sources: [...project.sources, source],
     updatedAt,
-  }) as SnapCutProject;
+  });
 }
 
 export function renameSource(
@@ -101,12 +92,12 @@ export function renameSource(
   displayName: string,
   updatedAt = projectInput.updatedAt,
 ): SnapCutProject {
-  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+  const project = projectInput;
   const normalized = displayName.trim();
-  if (normalized.length === 0 || [...normalized].length > 255) {
+  if (normalized.length === 0 || [...normalized].length > MAX_SOURCE_NAME_CODE_POINTS) {
     throw new DomainError(
       'INVALID_SOURCE_NAME',
-      'Source name must contain 1 to 255 Unicode characters.',
+      `Source name must contain 1 to ${MAX_SOURCE_NAME_CODE_POINTS} Unicode characters.`,
     );
   }
   if (!project.sources.some(({ id }) => id === sourceId)) {
@@ -118,7 +109,7 @@ export function renameSource(
       source.id === sourceId ? { ...source, displayName: normalized } : source,
     ),
     updatedAt,
-  }) as SnapCutProject;
+  });
 }
 
 export function removeUnusedSource(
@@ -126,7 +117,7 @@ export function removeUnusedSource(
   sourceId: string,
   updatedAt = projectInput.updatedAt,
 ): SnapCutProject {
-  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+  const project = projectInput;
   if (!project.sources.some(({ id }) => id === sourceId)) {
     throw new DomainError('SOURCE_NOT_FOUND', `Source does not exist: ${sourceId}`);
   }
@@ -136,39 +127,25 @@ export function removeUnusedSource(
   return snapCutProjectSchema.parse({
     ...project,
     sources: project.sources.filter(({ id }) => id !== sourceId),
+    sourceComparisons: project.sourceComparisons.filter(
+      (bookmark) => bookmark.sourceId !== sourceId,
+    ),
     updatedAt,
-  }) as SnapCutProject;
+  });
 }
 
 export function nextDefaultSourceName(sources: readonly SnapCutSource[]): string {
   const highest = sources.reduce((maximum, source) => {
-    const match = /^Source ([1-9]\d*)$/u.exec(source.displayName);
+    const match = /^S([1-9]\d*)$/u.exec(source.displayName);
     if (match === null) return maximum;
     const value = Number(match[1]);
     return Number.isSafeInteger(value) ? Math.max(maximum, value) : maximum;
   }, 0);
-  return `Source ${highest + 1}`;
+  return `S${highest + 1}`;
 }
 
-export function setLastExport(
-  projectInput: SnapCutProject,
-  lastExport: SnapCutExportRecord,
-  updatedAt = projectInput.updatedAt,
-): SnapCutProject {
-  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
-  return snapCutProjectSchema.parse({ ...project, lastExport, updatedAt }) as SnapCutProject;
-}
-
-export function defaultSelectionForSource(sourceInput: SnapCutSource): {
-  startMs: 0;
-  endMs: number;
-} {
-  const source = snapCutSourceSchema.parse(sourceInput);
-  return { startMs: 0, endMs: Math.min(source.durationMs, DEFAULT_SELECTION_DURATION_MS) };
-}
-
-export function projectIndexEntry(projectInput: SnapCutProject): ProjectIndexEntry {
-  const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+function projectIndexEntry(projectInput: SnapCutProject) {
+  const project = projectInput;
   return {
     id: project.id,
     name: project.name,
@@ -180,7 +157,7 @@ export function projectIndexEntry(projectInput: SnapCutProject): ProjectIndexEnt
   };
 }
 
-export function buildProjectIndex(projects: readonly SnapCutProject[]): ProjectIndexFileV1 {
+export function buildProjectIndex(projects: readonly SnapCutProject[]) {
   const entries = projects
     .map(projectIndexEntry)
     .sort(
@@ -188,8 +165,8 @@ export function buildProjectIndex(projects: readonly SnapCutProject[]): ProjectI
         Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id),
     );
 
-  return projectIndexFileV1Schema.parse({
+  return projectIndexSchema.parse({
     schemaVersion: 1,
     projects: entries,
-  }) as ProjectIndexFileV1;
+  });
 }

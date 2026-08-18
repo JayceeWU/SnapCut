@@ -1,7 +1,5 @@
 #include <jni.h>
 
-#include <FLAC/metadata.h>
-#include <FLAC/stream_encoder.h>
 #include <lame.h>
 #include <samplerate.h>
 
@@ -133,18 +131,6 @@ float sanitize_sample(float sample) {
   return std::clamp(sample, -1.0F, 1.0F);
 }
 
-FLAC__int32 quantize_flac_24(float sample) {
-  const float sanitized = sanitize_sample(sample);
-  if (sanitized <= -1.0F) {
-    return -8388608;
-  }
-  if (sanitized >= 1.0F) {
-    return 8388607;
-  }
-  const long rounded = std::lround(static_cast<double>(sanitized) * 8388608.0);
-  return static_cast<FLAC__int32>(std::clamp(rounded, -8388608L, 8388607L));
-}
-
 class EncoderState {
  public:
   virtual ~EncoderState() = default;
@@ -177,91 +163,6 @@ class EncoderState {
 
   std::mutex mutex_;
   bool finished_ = false;
-};
-
-class FlacEncoderState final : public EncoderState {
- public:
-  static std::shared_ptr<FlacEncoderState> Create(
-      const char* path,
-      int sample_rate,
-      int channels,
-      uint64_t total_frames,
-      const char* title) {
-    std::shared_ptr<FlacEncoderState> state(new FlacEncoderState());
-    state->encoder_ = FLAC__stream_encoder_new();
-    state->metadata_ = FLAC__metadata_object_new(FLAC__METADATA_TYPE_VORBIS_COMMENT);
-    if (state->encoder_ == nullptr || state->metadata_ == nullptr) {
-      return nullptr;
-    }
-
-    if (!state->AppendComment("TITLE", title) ||
-        !state->AppendComment("COMMENT", "Exported by SnapCut")) {
-      return nullptr;
-    }
-    FLAC__StreamMetadata* metadata_blocks[] = {state->metadata_};
-    const bool configured =
-        FLAC__stream_encoder_set_verify(state->encoder_, true) &&
-        FLAC__stream_encoder_set_compression_level(state->encoder_, 5) &&
-        FLAC__stream_encoder_set_channels(state->encoder_, static_cast<uint32_t>(channels)) &&
-        FLAC__stream_encoder_set_bits_per_sample(state->encoder_, 24) &&
-        FLAC__stream_encoder_set_sample_rate(
-            state->encoder_, static_cast<uint32_t>(sample_rate)) &&
-        FLAC__stream_encoder_set_total_samples_estimate(state->encoder_, total_frames) &&
-        FLAC__stream_encoder_set_metadata(state->encoder_, metadata_blocks, 1);
-    if (!configured ||
-        FLAC__stream_encoder_init_file(state->encoder_, path, nullptr, nullptr) !=
-            FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
-      return nullptr;
-    }
-    state->initialized_ = true;
-    state->channels_ = channels;
-    return state;
-  }
-
-  int Channels() const override { return channels_; }
-
-  ~FlacEncoderState() override {
-    if (encoder_ != nullptr) {
-      FLAC__stream_encoder_delete(encoder_);
-    }
-    if (metadata_ != nullptr) {
-      FLAC__metadata_object_delete(metadata_);
-    }
-  }
-
- protected:
-  bool WriteLocked(const std::vector<float>& pcm, int frame_count) override {
-    if (!initialized_) {
-      return false;
-    }
-    std::vector<FLAC__int32> quantized(pcm.size());
-    std::transform(pcm.begin(), pcm.end(), quantized.begin(), quantize_flac_24);
-    return FLAC__stream_encoder_process_interleaved(
-        encoder_, quantized.data(), static_cast<uint32_t>(frame_count));
-  }
-
-  bool FinishLocked() override {
-    return initialized_ && FLAC__stream_encoder_finish(encoder_);
-  }
-
- private:
-  bool AppendComment(const char* name, const char* value) {
-    FLAC__StreamMetadata_VorbisComment_Entry entry{};
-    if (!FLAC__metadata_object_vorbiscomment_entry_from_name_value_pair(
-            &entry, name, value)) {
-      return false;
-    }
-    if (!FLAC__metadata_object_vorbiscomment_append_comment(metadata_, entry, false)) {
-      std::free(entry.entry);
-      return false;
-    }
-    return true;
-  }
-
-  FLAC__StreamEncoder* encoder_ = nullptr;
-  FLAC__StreamMetadata* metadata_ = nullptr;
-  bool initialized_ = false;
-  int channels_ = 0;
 };
 
 class Mp3EncoderState final : public EncoderState {
@@ -592,35 +493,6 @@ extern "C" JNIEXPORT jint JNICALL
 Java_expo_modules_snapcutmedia_export_NativeExportCodecBridge_nativeCloseResampler(
     JNIEnv*, jobject, jlong handle) {
   return RemoveAndCancel(&g_resamplers, &g_resampler_registry_mutex, handle);
-}
-
-extern "C" JNIEXPORT jlong JNICALL
-Java_expo_modules_snapcutmedia_export_NativeExportCodecBridge_nativeCreateFlacEncoder(
-    JNIEnv* env,
-    jobject,
-    jstring path,
-    jint sample_rate,
-    jint channels,
-    jlong total_frames,
-    jstring title) {
-  if (sample_rate <= 0 || channels < 1 || channels > kMaxChannels || total_frames <= 0) {
-    return 0;
-  }
-  std::string native_path;
-  std::string native_title;
-  if (!ReadUtf8(env, path, &native_path) || !ReadUtf8(env, title, &native_title)) {
-    return 0;
-  }
-  auto encoder = FlacEncoderState::Create(
-      native_path.c_str(), sample_rate, channels, static_cast<uint64_t>(total_frames),
-      native_title.c_str());
-  if (encoder == nullptr) {
-    return 0;
-  }
-  const jlong handle = g_next_encoder_handle.fetch_add(1);
-  std::lock_guard<std::mutex> guard(g_encoder_registry_mutex);
-  g_encoders.emplace(handle, std::move(encoder));
-  return handle;
 }
 
 extern "C" JNIEXPORT jlong JNICALL

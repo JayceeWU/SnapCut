@@ -12,7 +12,6 @@ import expo.modules.snapcutmedia.models.ExportFormat
 import expo.modules.snapcutmedia.source.CancellationCheck
 import expo.modules.snapcutmedia.source.MediaResourceHooks
 import java.io.File
-import java.io.FileInputStream
 import java.math.BigInteger
 import kotlin.math.abs
 
@@ -35,7 +34,6 @@ internal class CompletedDecodedOutputVerifier {
     hooks: MediaResourceHooks
   ): VerifiedDecodedOutput {
     val verificationError = when (format) {
-      ExportFormat.FLAC -> SnapCutMediaError.FLAC_VERIFICATION_FAILED
       ExportFormat.MP3 -> SnapCutMediaError.MP3_VERIFICATION_FAILED
       ExportFormat.M4A -> SnapCutMediaError.AAC_VERIFICATION_FAILED
     }
@@ -56,11 +54,7 @@ internal class CompletedDecodedOutputVerifier {
         }
         if (audioTracks.size != 1) fail("track-count")
         val (trackIndex, trackFormat, mime) = audioTracks.single()
-        val flacExtractorPcm =
-          format == ExportFormat.FLAC && mime == "audio/raw" && hasFlacSignature(file)
         val acceptedMime = when (format) {
-          ExportFormat.FLAC ->
-            mime == "audio/flac" || mime == "audio/x-flac" || flacExtractorPcm
           ExportFormat.MP3 -> mime == "audio/mpeg"
           ExportFormat.M4A -> mime == MediaFormat.MIMETYPE_AUDIO_AAC
         }
@@ -73,13 +67,11 @@ internal class CompletedDecodedOutputVerifier {
         if (channels != expectedChannelCount) fail("channel-count")
         if (durationUs == null || durationUs <= 0L) fail("duration-missing")
         if (
-          !flacExtractorPcm &&
           MediaCodecList(MediaCodecList.REGULAR_CODECS)
             .findDecoderForFormat(trackFormat) == null
         ) fail("decoder")
         val expectedDurationUs = framesToDurationUs(expectedFrames, expectedSampleRateHz)
         val toleranceUs = when (format) {
-          ExportFormat.FLAC -> FLAC_DURATION_TOLERANCE_US
           // LAME adds encoder delay and pads to complete MPEG audio frames.
           ExportFormat.MP3 -> MP3_FIXED_TOLERANCE_US +
             framesToDurationUs(MP3_DELAY_PADDING_FRAMES, expectedSampleRateHz)
@@ -109,7 +101,7 @@ internal class CompletedDecodedOutputVerifier {
         return VerifiedDecodedOutput(
           actualDurationMs = ceilDivide(durationUs, 1_000L),
           fileSizeBytes = file.length(),
-          codecMime = if (flacExtractorPcm) "audio/flac" else mime,
+          codecMime = mime,
           sampleRateHz = sampleRate,
           channelCount = channels
         )
@@ -135,12 +127,6 @@ internal class CompletedDecodedOutputVerifier {
   private fun ceilDivide(value: Long, divisor: Long): Long =
     value / divisor + if (value % divisor == 0L) 0L else 1L
 
-  private fun hasFlacSignature(file: File): Boolean =
-    FileInputStream(file).use { input ->
-      val signature = ByteArray(4)
-      input.read(signature) == signature.size && signature.contentEquals(FLAC_SIGNATURE)
-    }
-
   private fun isAacLc(format: MediaFormat): Boolean {
     val declared = format.integerOrNull(MediaFormat.KEY_AAC_PROFILE)
       ?: format.integerOrNull(MediaFormat.KEY_PROFILE)
@@ -153,12 +139,10 @@ internal class CompletedDecodedOutputVerifier {
   }
 
   private companion object {
-    const val FLAC_DURATION_TOLERANCE_US = 2_000L
     const val MP3_FIXED_TOLERANCE_US = 50_000L
     const val MP3_DELAY_PADDING_FRAMES = 2_304L
     const val AAC_FIXED_TOLERANCE_US = 50_000L
     const val AAC_DELAY_PADDING_FRAMES = 2_048L
-    val FLAC_SIGNATURE = byteArrayOf(0x66, 0x4c, 0x61, 0x43)
   }
 }
 

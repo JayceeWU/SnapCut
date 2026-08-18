@@ -13,7 +13,9 @@ jest.mock('expo-router', () => ({
 
 function automaticProject(): SnapCutProject {
   return {
-    schemaVersion: 7,
+    schemaVersion: 9,
+    crossfades: [],
+    sourceComparisons: [],
     id: '11111111-1111-4111-8111-111111111111',
     name: '2026-08-13 14-30-25',
     namePromptCompleted: false,

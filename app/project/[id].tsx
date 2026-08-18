@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ComponentProps } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { randomUUID } from 'expo-crypto';
 import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ClipEditModal,
   CompositionWaveform,
+  CrossfadeModal,
   EmptyState,
   ErrorBanner,
   ExportModal,
@@ -15,22 +16,36 @@ import {
   PlaybackControls,
   ProjectNameModal,
   SequentialClipList,
+  SourceComparisonModal,
   SourceNameModal,
   type ClipRangeDraft,
+  type ComparisonPreviewKind,
 } from '@/components';
 import { colors, copy, layout, minimumTouchTarget, radii, spacing, typography } from '@/constants';
 import {
   addClip,
+  addCrossfade,
+  appendSourceComparisonClips,
+  availableCrossfadeDurations,
   completeProjectNamePrompt,
   compositionDurationMs,
   deleteClip,
+  deleteCrossfade,
+  firstAvailableCrossfadeBoundary,
+  MIN_CLIP_DURATION_MS,
   reorderClip,
+  moveCrossfade,
+  setSourceComparisonBookmark,
   shouldPromptForProjectName,
   updateClip,
+  updateCrossfadeDuration,
+  type CrossfadeDurationMs,
   type SnapCutClip,
+  type SnapCutCrossfade,
   type SnapCutProject,
   type SnapCutSource,
 } from '@/domain';
+import { formatTimelineTime } from '@/utils/time';
 import {
   cancelActiveImportRuntime,
   exportCoordinator,
@@ -110,8 +125,48 @@ function LivePlaybackControls({
   );
 }
 
+function LiveSourceComparisonModal({
+  projectId,
+  previewKind,
+  ...props
+}: Omit<
+  ComponentProps<typeof SourceComparisonModal>,
+  'previewKind' | 'selectionPlaybackPositionMs'
+> & {
+  projectId: string;
+  previewKind: ComparisonPreviewKind;
+}) {
+  const selectionPlaybackPositionMs = usePlaybackStore((state) =>
+    previewKind !== null && state.projectId === projectId && state.mode === 'selection'
+      ? state.positionMs
+      : null,
+  );
+  return (
+    <SourceComparisonModal
+      {...props}
+      previewKind={previewKind}
+      selectionPlaybackPositionMs={selectionPlaybackPositionMs}
+    />
+  );
+}
+
+function LiveClipEditModal({
+  projectId,
+  ...props
+}: Omit<ComponentProps<typeof ClipEditModal>, 'playbackPositionMs'> & { projectId: string }) {
+  const playbackPositionMs = usePlaybackStore((state) =>
+    state.projectId === projectId && state.mode === 'selection' ? state.positionMs : null,
+  );
+  return <ClipEditModal {...props} playbackPositionMs={playbackPositionMs} />;
+}
+
 type ClipEditorState =
   { mode: 'add'; sourceId: string | null } | { mode: 'edit'; clipId: string } | null;
+
+type CrossfadeEditorState =
+  | { mode: 'add'; leftClipId: string; rightClipId: string }
+  | { mode: 'edit'; crossfadeId: string }
+  | null;
 
 type SourceNameEditorState = {
   sourceId: string;
@@ -137,6 +192,9 @@ export default function ProjectEditorScreen() {
   const updateProject = useProjectStore((state) => state.updateProject);
 
   const waveformsBySourceId = useEditorStore((state) => state.waveformsBySourceId);
+  const waveformLoadStatesBySourceId = useEditorStore(
+    (state) => state.waveformLoadStatesBySourceId,
+  );
   const timelineCursorMs = useEditorStore((state) => state.timelineCursorMs);
   const syncEditorProject = useEditorStore((state) => state.syncProject);
   const setTimelineCursorMs = useEditorStore((state) => state.setTimelineCursorMs);
@@ -169,7 +227,10 @@ export default function ProjectEditorScreen() {
   const [showImport, setShowImport] = useState(false);
   const [importReloadFailed, setImportReloadFailed] = useState(false);
   const [showMedia, setShowMedia] = useState(false);
+  const [comparisonSourceId, setComparisonSourceId] = useState<string | null>(null);
+  const [comparisonPreviewKind, setComparisonPreviewKind] = useState<ComparisonPreviewKind>(null);
   const [clipEditor, setClipEditor] = useState<ClipEditorState>(null);
+  const [crossfadeEditor, setCrossfadeEditor] = useState<CrossfadeEditorState>(null);
   const [sourceNameEditor, setSourceNameEditor] = useState<SourceNameEditorState>(null);
   const [requestedPreviewSourceId, setRequestedPreviewSourceId] = useState<string | null>(null);
   const [deletingSourceId, setDeletingSourceId] = useState<string | null>(null);
@@ -261,8 +322,46 @@ export default function ProjectEditorScreen() {
     clipEditor?.mode === 'edit'
       ? (project.clips.find(({ id }) => id === clipEditor.clipId) ?? null)
       : null;
+  const editingCrossfade =
+    crossfadeEditor?.mode === 'edit'
+      ? (project.crossfades.find(({ id }) => id === crossfadeEditor.crossfadeId) ?? null)
+      : null;
+  const crossfadeBoundary =
+    crossfadeEditor?.mode === 'add'
+      ? { leftClipId: crossfadeEditor.leftClipId, rightClipId: crossfadeEditor.rightClipId }
+      : editingCrossfade
+        ? { leftClipId: editingCrossfade.leftClipId, rightClipId: editingCrossfade.rightClipId }
+        : null;
+  const crossfadeDurations = crossfadeBoundary
+    ? availableCrossfadeDurations(
+        project,
+        crossfadeBoundary.leftClipId,
+        crossfadeBoundary.rightClipId,
+        editingCrossfade?.id,
+      )
+    : [];
+  const nextCrossfadeBoundary = firstAvailableCrossfadeBoundary(project);
   const namingSource = project.sources.find(({ id }) => id === sourceNameEditor?.sourceId) ?? null;
+  const comparisonSource = project.sources.find(({ id }) => id === comparisonSourceId) ?? null;
+  const comparisonWaveform = comparisonSource
+    ? (waveformsBySourceId[comparisonSource.id] ?? null)
+    : null;
+  const comparisonBookmark = comparisonSource
+    ? (project.sourceComparisons.find(({ sourceId }) => sourceId === comparisonSource.id) ?? null)
+    : null;
   const inUseSourceIds = new Set(project.clips.map(({ sourceId }) => sourceId));
+  const compareReadySourceIds = new Set(
+    project.sources
+      .filter(
+        (source) =>
+          source.waveformStatus === 'ready' &&
+          source.durationMs >= MIN_CLIP_DURATION_MS * 2 &&
+          waveformLoadStatesBySourceId[source.id] === 'ready' &&
+          waveformsBySourceId[source.id] !== null &&
+          waveformsBySourceId[source.id] !== undefined,
+      )
+      .map(({ id }) => id),
+  );
 
   const clearOperationErrors = () => {
     clearError();
@@ -467,6 +566,161 @@ export default function ProjectEditorScreen() {
     });
   };
 
+  const previewClipSource = (source: SnapCutSource, positionMs: number) => {
+    setRequestedPreviewSourceId(source.id);
+    void previewCoordinator.toggleSourceAt(project, source, positionMs).catch(() => {
+      setRequestedPreviewSourceId(null);
+    });
+  };
+
+  const pauseClipPreview = () => {
+    setRequestedPreviewSourceId(null);
+    const playback = usePlaybackStore.getState();
+    if (playback.projectId === project.id && playback.mode === 'selection') {
+      void previewCoordinator.pause().catch(() => undefined);
+    }
+  };
+
+  const seekClipPreview = (positionMs: number) => {
+    const playback = usePlaybackStore.getState();
+    if (playback.projectId === project.id && playback.mode === 'selection' && playback.loaded) {
+      void previewCoordinator.seek(positionMs, false).catch(() => undefined);
+    }
+  };
+
+  const releaseClipPreview = () => {
+    setRequestedPreviewSourceId(null);
+    void previewCoordinator.releaseProject(project.id).catch(() => undefined);
+  };
+
+  const openComparison = (source: SnapCutSource) => {
+    if (!compareReadySourceIds.has(source.id)) return;
+    clearOperationErrors();
+    void (async () => {
+      if (!(await stopSourcePreview())) return;
+      setShowMedia(false);
+      setComparisonPreviewKind(null);
+      setComparisonSourceId(source.id);
+    })();
+  };
+
+  const closeComparison = () => {
+    setComparisonSourceId(null);
+    setComparisonPreviewKind(null);
+    setRequestedPreviewSourceId(null);
+    clearOperationErrors();
+    setShowMedia(true);
+    void previewCoordinator.releaseProject(project.id).catch(() => undefined);
+  };
+
+  const pauseComparisonInteraction = () => {
+    setComparisonPreviewKind(null);
+    const playback = usePlaybackStore.getState();
+    if (playback.projectId === project.id && playback.mode === 'selection') {
+      void previewCoordinator.pause().catch(() => undefined);
+    }
+  };
+
+  const previewComparison = (firstMs: number, secondMs: number) => {
+    if (!comparisonSource) return;
+    setRequestedPreviewSourceId(comparisonSource.id);
+    setComparisonPreviewKind('transition');
+    void previewCoordinator
+      .toggleComparison(project, comparisonSource, firstMs, secondMs)
+      .catch(() => {
+        setRequestedPreviewSourceId(null);
+        setComparisonPreviewKind(null);
+      });
+  };
+
+  const previewComparisonResult = (firstMs: number, secondMs: number, startPositionMs: number) => {
+    if (!comparisonSource) return;
+    setRequestedPreviewSourceId(comparisonSource.id);
+    setComparisonPreviewKind('result');
+    void previewCoordinator
+      .toggleComparisonResult(project, comparisonSource, firstMs, secondMs, startPositionMs)
+      .catch(() => {
+        setRequestedPreviewSourceId(null);
+        setComparisonPreviewKind(null);
+      });
+  };
+
+  const pauseComparisonResultScrub = () => {
+    const playback = usePlaybackStore.getState();
+    if (playback.projectId === project.id && playback.mode === 'selection') {
+      void previewCoordinator.pause().catch(() => undefined);
+    }
+  };
+
+  const seekComparisonResult = (positionMs: number) => {
+    const playback = usePlaybackStore.getState();
+    if (
+      comparisonPreviewKind === 'result' &&
+      playback.projectId === project.id &&
+      playback.mode === 'selection' &&
+      playback.loaded
+    ) {
+      void previewCoordinator.seek(positionMs, false).catch(() => undefined);
+    }
+  };
+
+  const saveComparison = async (firstMs: number, secondMs: number): Promise<boolean> => {
+    if (!comparisonSource || historyCommandLocked.current || importActive) return false;
+    historyCommandLocked.current = true;
+    setHistoryBusy(true);
+    try {
+      await previewCoordinator.releaseProject(project.id);
+      setRequestedPreviewSourceId(null);
+      setComparisonPreviewKind(null);
+      const saved = await updateProject(project.id, (current) =>
+        setSourceComparisonBookmark(
+          current,
+          comparisonSource.id,
+          firstMs,
+          secondMs,
+          new Date().toISOString(),
+        ),
+      );
+      return saved !== null;
+    } catch {
+      return false;
+    } finally {
+      historyCommandLocked.current = false;
+      setHistoryBusy(false);
+    }
+  };
+
+  const confirmAddComparisonClips = (bookmark: NonNullable<typeof comparisonBookmark>) => {
+    if (!comparisonSource) return;
+    Alert.alert(
+      'Add two clips?',
+      `Keep 0:00.000 to ${formatTimelineTime(bookmark.firstMs)}, then ${formatTimelineTime(bookmark.secondMs)} to ${formatTimelineTime(comparisonSource.durationMs)}.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Add Clips',
+          onPress: () => {
+            void saveClipEdit((current) =>
+              appendSourceComparisonClips(
+                current,
+                comparisonSource.id,
+                randomUUID(),
+                randomUUID(),
+                new Date().toISOString(),
+              ),
+            ).then((saved) => {
+              if (!saved) return;
+              setComparisonSourceId(null);
+              setRequestedPreviewSourceId(null);
+              setComparisonPreviewKind(null);
+              setShowMedia(true);
+            });
+          },
+        },
+      ],
+    );
+  };
+
   const openAddClip = (sourceId: string | null = project.sources[0]?.id ?? null) => {
     clearOperationErrors();
     if (project.sources.length === 0) {
@@ -487,7 +741,10 @@ export default function ProjectEditorScreen() {
         ? (current: SnapCutProject) => addClip(current, { id: randomUUID(), ...draft }, updatedAt)
         : (current: SnapCutProject) => updateClip(current, state.clipId, draft, updatedAt);
     void saveClipEdit(edit).then((saved) => {
-      if (saved) setClipEditor(null);
+      if (saved) {
+        setRequestedPreviewSourceId(null);
+        setClipEditor(null);
+      }
     });
   };
 
@@ -496,7 +753,10 @@ export default function ProjectEditorScreen() {
     const clipId = clipEditor.clipId;
     void saveClipEdit((current) => deleteClip(current, clipId, new Date().toISOString())).then(
       (saved) => {
-        if (saved) setClipEditor(null);
+        if (saved) {
+          setRequestedPreviewSourceId(null);
+          setClipEditor(null);
+        }
       },
     );
   };
@@ -506,6 +766,61 @@ export default function ProjectEditorScreen() {
     void saveClipEdit((current) =>
       reorderClip(current, clipId, destinationIndex, new Date().toISOString()),
     );
+  };
+
+  const openAddCrossfade = () => {
+    if (!nextCrossfadeBoundary) return;
+    clearOperationErrors();
+    pauseForInteraction();
+    setCrossfadeEditor({ mode: 'add', ...nextCrossfadeBoundary });
+  };
+
+  const saveCrossfade = (durationMs: CrossfadeDurationMs) => {
+    const state = crossfadeEditor;
+    if (!state) return;
+    const updatedAt = new Date().toISOString();
+    const edit =
+      state.mode === 'add'
+        ? (current: SnapCutProject) =>
+            addCrossfade(
+              current,
+              {
+                id: randomUUID(),
+                leftClipId: state.leftClipId,
+                rightClipId: state.rightClipId,
+                durationMs,
+              },
+              updatedAt,
+            )
+        : (current: SnapCutProject) =>
+            updateCrossfadeDuration(current, state.crossfadeId, durationMs, updatedAt);
+    void saveClipEdit(edit).then((saved) => {
+      if (saved) setCrossfadeEditor(null);
+    });
+  };
+
+  const removeCrossfade = (crossfadeId: string) => {
+    void saveClipEdit((current) =>
+      deleteCrossfade(current, crossfadeId, new Date().toISOString()),
+    ).then((saved) => {
+      if (saved && crossfadeEditor?.mode === 'edit') setCrossfadeEditor(null);
+    });
+  };
+
+  const moveSequentialCrossfade = (crossfadeId: string, destinationBoundaryIndex: number) => {
+    pauseForInteraction();
+    void saveClipEdit((current) => {
+      const leftClip = current.clips[destinationBoundaryIndex];
+      const rightClip = current.clips[destinationBoundaryIndex + 1];
+      if (!leftClip || !rightClip) return current;
+      return moveCrossfade(
+        current,
+        crossfadeId,
+        leftClip.id,
+        rightClip.id,
+        new Date().toISOString(),
+      );
+    });
   };
 
   const submitSourceName = (name: string) => {
@@ -532,11 +847,18 @@ export default function ProjectEditorScreen() {
   // before beginSession assigns a project id, the resulting error still belongs
   // to this visible Media operation.
   const currentPlaybackError =
-    playbackError && (playbackProjectId === project.id || showMedia) ? playbackError : null;
+    playbackError && (playbackProjectId === project.id || showMedia || comparisonSource !== null)
+      ? playbackError
+      : null;
   const modalOperationError = currentPlaybackError ?? error;
   const dismissModalOperationError = currentPlaybackError ? clearPlaybackError : clearError;
   const nativeOperationModalActive =
-    showMedia || clipEditor !== null || namingSource !== null || renameReason !== null;
+    showMedia ||
+    comparisonSource !== null ||
+    clipEditor !== null ||
+    crossfadeEditor !== null ||
+    namingSource !== null ||
+    renameReason !== null;
   const editorError = !nativeOperationModalActive
     ? currentPlaybackError
       ? { message: currentPlaybackError, onDismiss: clearPlaybackError }
@@ -645,24 +967,52 @@ export default function ProjectEditorScreen() {
           <Text accessibilityRole="header" style={styles.clipsTitle}>
             Clips
           </Text>
-          <Pressable
-            accessibilityLabel="Add clip"
-            accessibilityRole="button"
-            accessibilityState={{ disabled: editorBusy }}
-            disabled={editorBusy}
-            onPress={() => openAddClip()}
-            style={({ pressed }) => [styles.addClipButton, pressed && styles.pressed]}
-            testID="add-clip"
-          >
-            <Text style={styles.addClipLabel}>+ Clip</Text>
-          </Pressable>
+          <View style={styles.clipActions}>
+            <Pressable
+              accessibilityLabel="Add clip"
+              accessibilityRole="button"
+              accessibilityState={{ disabled: editorBusy }}
+              disabled={editorBusy}
+              onPress={() => openAddClip()}
+              style={({ pressed }) => [styles.addClipButton, pressed && styles.pressed]}
+              testID="add-clip"
+            >
+              <Text style={styles.addClipLabel}>+ Clip</Text>
+            </Pressable>
+            <Pressable
+              accessibilityHint={
+                nextCrossfadeBoundary
+                  ? 'Adds a crossfade at the first available clip boundary'
+                  : 'Every clip boundary is occupied or lacks enough source audio'
+              }
+              accessibilityLabel="Add crossfade"
+              accessibilityRole="button"
+              accessibilityState={{ disabled: editorBusy || nextCrossfadeBoundary === null }}
+              disabled={editorBusy || nextCrossfadeBoundary === null}
+              onPress={openAddCrossfade}
+              style={({ pressed }) => [
+                styles.addCrossfadeButton,
+                (editorBusy || nextCrossfadeBoundary === null) && styles.disabled,
+                pressed && styles.pressed,
+              ]}
+              testID="add-crossfade"
+            >
+              <Text style={styles.addClipLabel}>+ Crossfade</Text>
+            </Pressable>
+          </View>
         </View>
 
         <SequentialClipList
           clips={project.clips}
+          crossfades={project.crossfades}
           disabled={editorBusy}
+          onDeleteCrossfade={removeCrossfade}
           onEdit={(clip: SnapCutClip) => setClipEditor({ mode: 'edit', clipId: clip.id })}
+          onEditCrossfade={(crossfade: SnapCutCrossfade) =>
+            setCrossfadeEditor({ mode: 'edit', crossfadeId: crossfade.id })
+          }
           onInteractionStart={pauseForInteraction}
+          onMoveCrossfade={moveSequentialCrossfade}
           onReorder={reorderSequentialClip}
           sources={project.sources}
         />
@@ -675,11 +1025,12 @@ export default function ProjectEditorScreen() {
       ) : null}
 
       <MediaLibraryModal
+        compareReadySourceIds={compareReadySourceIds}
         deletingSourceId={deletingSourceId}
         importBusy={importActive}
         inUseSourceIds={inUseSourceIds}
-        onAddClip={(source) => openAddClip(source.id)}
         onClose={closeMedia}
+        onCompare={openComparison}
         onDelete={removeSource}
         onImport={importMedia}
         onPreview={previewSource}
@@ -695,20 +1046,68 @@ export default function ProjectEditorScreen() {
         sources={project.sources}
         visible={showMedia}
       />
-      <ClipEditModal
+      {comparisonSource && comparisonWaveform ? (
+        <LiveSourceComparisonModal
+          bookmark={comparisonBookmark}
+          busy={editorBusy}
+          key={comparisonSource.id}
+          onAddClips={confirmAddComparisonClips}
+          onClose={closeComparison}
+          onDismissError={dismissModalOperationError}
+          onInteractionStart={pauseComparisonInteraction}
+          onPreview={previewComparison}
+          onResultPreview={previewComparisonResult}
+          onResultScrubEnd={seekComparisonResult}
+          onResultScrubStart={pauseComparisonResultScrub}
+          onSet={saveComparison}
+          operationError={modalOperationError}
+          previewKind={comparisonPreviewKind}
+          previewLoading={activePlaybackMode === 'selection' && playbackLoading}
+          previewPlaying={activePlaybackMode === 'selection' && playbackPlaying}
+          projectId={project.id}
+          source={comparisonSource}
+          visible
+          waveform={comparisonWaveform}
+        />
+      ) : null}
+      <LiveClipEditModal
         busy={editorBusy}
         clip={editingClip}
         initialSourceId={clipEditor?.mode === 'add' ? clipEditor.sourceId : null}
         onCancel={() => {
+          releaseClipPreview();
           setClipEditor(null);
           clearOperationErrors();
         }}
         onDelete={editingClip ? deleteEditedClip : undefined}
         onDismissError={dismissModalOperationError}
+        onPausePreview={pauseClipPreview}
+        onPreview={previewClipSource}
+        onPreviewSourceChange={releaseClipPreview}
         onSave={saveClipModal}
+        onSeekPreview={seekClipPreview}
         operationError={modalOperationError}
+        playbackLoading={activePlaybackMode === 'selection' && playbackLoading}
+        playbackPlaying={activePlaybackMode === 'selection' && playbackPlaying}
+        previewSourceId={requestedPreviewSourceId}
+        projectId={project.id}
         sources={project.sources}
         visible={clipEditor !== null}
+        waveformsBySourceId={waveformsBySourceId}
+      />
+      <CrossfadeModal
+        availableDurationsMs={crossfadeDurations}
+        busy={editorBusy}
+        initialDurationMs={editingCrossfade?.durationMs}
+        onCancel={() => {
+          setCrossfadeEditor(null);
+          clearOperationErrors();
+        }}
+        onDelete={editingCrossfade ? () => removeCrossfade(editingCrossfade.id) : undefined}
+        onDismissError={dismissModalOperationError}
+        onSave={saveCrossfade}
+        operationError={modalOperationError}
+        visible={crossfadeEditor !== null}
       />
       <SourceNameModal
         busy={mutation === 'rename-source'}
@@ -829,6 +1228,11 @@ const styles = StyleSheet.create({
   clipsTitle: {
     ...typography.sectionTitle,
   },
+  clipActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xxs,
+  },
   addClipButton: {
     minWidth: 76,
     height: minimumTouchTarget,
@@ -839,6 +1243,16 @@ const styles = StyleSheet.create({
   addClipLabel: {
     ...typography.label,
     color: colors.focus,
+  },
+  addCrossfadeButton: {
+    minWidth: 116,
+    height: minimumTouchTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.md,
+  },
+  disabled: {
+    opacity: 0.42,
   },
   errorOverlay: {
     position: 'absolute',

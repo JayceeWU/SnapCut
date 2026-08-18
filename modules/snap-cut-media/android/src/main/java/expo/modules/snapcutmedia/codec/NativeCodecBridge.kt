@@ -7,7 +7,6 @@ internal data class NativeCodecLibraryStatus(
 
 internal data class NativeCodecBuildInfo(
   val bridgeLoaded: Boolean,
-  val flac: NativeCodecLibraryStatus,
   val lame: NativeCodecLibraryStatus,
   val libsamplerate: NativeCodecLibraryStatus
 )
@@ -35,14 +34,12 @@ internal object NativeCodecBridge {
   fun getBuildInfo(): NativeCodecBuildInfo {
     if (!isLoaded) return unavailableBuildInfo()
 
-    val flacVersion = nativeVersionOrNull(::nativeFlacVersion)
     val lameVersion = nativeVersionOrNull(::nativeLameVersion)
     val sampleRateVersion = nativeVersionOrNull(::nativeSampleRateVersion)
     val smokeAvailable = probeCodecLifecycle()
 
     return NativeCodecBuildInfo(
       bridgeLoaded = true,
-      flac = NativeCodecLibraryStatus(flacVersion, smokeAvailable && flacVersion != null),
       lame = NativeCodecLibraryStatus(lameVersion, smokeAvailable && lameVersion != null),
       libsamplerate = NativeCodecLibraryStatus(
         sampleRateVersion,
@@ -76,12 +73,10 @@ internal object NativeCodecBridge {
 
   private fun unavailableBuildInfo() = NativeCodecBuildInfo(
     bridgeLoaded = false,
-    flac = NativeCodecLibraryStatus(version = null, available = false),
     lame = NativeCodecLibraryStatus(version = null, available = false),
     libsamplerate = NativeCodecLibraryStatus(version = null, available = false)
   )
 
-  private external fun nativeFlacVersion(): String
   private external fun nativeLameVersion(): String
   private external fun nativeSampleRateVersion(): String
   private external fun nativeCreateSmokeHandle(): Long

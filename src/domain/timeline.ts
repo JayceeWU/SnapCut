@@ -1,8 +1,7 @@
 import { assertIntegerMilliseconds } from '@/utils/time';
 
 import { DomainError } from './errors';
-import { snapCutClipSchema } from './schemas';
-import type { ClipTimelineEntry, SnapCutClip, TimelinePosition, TrackId } from './types';
+import type { ClipTimelineEntry, SnapCutClip, TimelinePosition } from './types';
 
 function checkedAdd(left: number, right: number): number {
   const result = left + right;
@@ -13,13 +12,7 @@ function checkedAdd(left: number, right: number): number {
 }
 
 export function clipDurationMs(clip: SnapCutClip): number {
-  const parsed = snapCutClipSchema.parse(clip);
-  return parsed.endMs - parsed.startMs;
-}
-
-/** v7 has no persisted absolute position; this is the clip's own duration. */
-export function clipTimelineEndMs(clip: SnapCutClip): number {
-  return clipDurationMs(clip);
+  return clip.endMs - clip.startMs;
 }
 
 export function compositionDurationMs(clips: readonly SnapCutClip[]): number {
@@ -27,18 +20,12 @@ export function compositionDurationMs(clips: readonly SnapCutClip[]): number {
 }
 
 export function buildClipTimeline(clips: readonly SnapCutClip[]): ClipTimelineEntry[] {
-  const ids = new Set<string>();
   let cursorMs = 0;
   return clips.map((clip) => {
-    const parsed = snapCutClipSchema.parse(clip) as SnapCutClip;
-    if (ids.has(parsed.id)) {
-      throw new DomainError('DUPLICATE_ID', `Duplicate clip ID: ${parsed.id}`);
-    }
-    ids.add(parsed.id);
     const compositionStartMs = cursorMs;
-    cursorMs = checkedAdd(cursorMs, clipDurationMs(parsed));
+    cursorMs = checkedAdd(cursorMs, clipDurationMs(clip));
     return {
-      clipId: parsed.id,
+      clipId: clip.id,
       compositionStartMs,
       compositionEndMs: cursorMs,
     };
@@ -67,39 +54,3 @@ export function mapCompositionPosition(
     compositionPositionMs: positionMs,
   };
 }
-
-export function mapTimelinePositionToClips(
-  clips: readonly SnapCutClip[],
-  compositionPositionMs: number,
-): TimelinePosition[] {
-  const result = mapCompositionPosition(clips, compositionPositionMs);
-  return result === null ? [] : [result];
-}
-
-// Compatibility helpers for private native adapters while v7 callers migrate.
-export function trackTimelineEndMs(
-  clips: readonly SnapCutClip[],
-  _trackId: TrackId,
-  excludeClipId?: string,
-): number {
-  return compositionDurationMs(clips.filter(({ id }) => id !== excludeClipId));
-}
-
-export function findClipCollisionIds(): string[] {
-  return [];
-}
-
-export function canPlaceClip(): boolean {
-  return true;
-}
-
-export function snapClipTimelineStartMs(
-  _clips: readonly SnapCutClip[],
-  _candidate: SnapCutClip,
-  requestedTimelineStartMs: number,
-): number {
-  return assertIntegerMilliseconds(requestedTimelineStartMs, 'requestedTimelineStartMs');
-}
-
-export const buildCompositionTimeline = buildClipTimeline;
-export const mapCompositionPositionToClip = mapCompositionPosition;

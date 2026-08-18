@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 
 import { waveformFileSchema } from '@/domain';
-import type { SnapCutProject, WaveformFileV1 } from '@/domain';
+import type { SnapCutProject, WaveformFile } from '@/domain';
 
 export interface WaveformReaderPort {
-  loadWaveform(projectId: string, sourceId: string): Promise<WaveformFileV1 | null>;
+  loadWaveform(projectId: string, sourceId: string): Promise<WaveformFile | null>;
 }
 
 export interface EditorServicePorts {
@@ -16,7 +16,7 @@ export type WaveformLoadState = 'idle' | 'loading' | 'ready' | 'unavailable' | '
 export interface EditorState {
   projectId: string | null;
   editingClipId: string | null;
-  waveformsBySourceId: Record<string, WaveformFileV1 | null>;
+  waveformsBySourceId: Record<string, WaveformFile | null>;
   waveformLoadStatesBySourceId: Record<string, WaveformLoadState>;
   timelineCursorMs: number;
   configureServices: (ports: EditorServicePorts) => void;
@@ -135,7 +135,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         try {
           const result = await editorPorts.waveformReader!.loadWaveform(project.id, source.id);
           if (generation !== projectWaveformGeneration || get().projectId !== project.id) return;
-          const waveform = result ? (waveformFileSchema.parse(result) as WaveformFileV1) : null;
+          const waveform = result ? waveformFileSchema.parse(result) : null;
           set((state) => ({
             waveformsBySourceId: { ...state.waveformsBySourceId, [source.id]: waveform },
             waveformLoadStatesBySourceId: {

@@ -65,7 +65,7 @@ class DecodedExportPolicyTest {
     jobId = "job-1",
     generation = 1,
     projectId = "project-1",
-    format = ExportFormat.FLAC,
+    format = ExportFormat.MP3,
     displayNameWithoutExtension = "Export",
     clips = listOf(NativePreviewClip("clip-1", "source-1", "file:/source.m4a", 0, 100)),
     outputSampleRateHz = outputRate,

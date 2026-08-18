@@ -20,7 +20,6 @@ internal data class StagedDecodedExportResult(
   val sampleRateHz: Int,
   val channelCount: Int,
   val bitrateKbps: Int?,
-  val bitsPerSample: Int?,
   val fileSizeBytes: Long,
   val outputPcmFrames: Long
 )
@@ -53,7 +52,6 @@ internal class DecodedExportService(
       }
     }
     val expectedSuffix = when (request.format) {
-      ExportFormat.FLAC -> ".flac"
       ExportFormat.MP3 -> ".mp3"
       ExportFormat.M4A -> ".m4a"
     }
@@ -147,9 +145,7 @@ internal class DecodedExportService(
         bitrateKbps = when (request.format) {
           ExportFormat.M4A -> if (outputConfig.channelCount == 1) 160 else 320
           ExportFormat.MP3 -> 320
-          ExportFormat.FLAC -> null
         },
-        bitsPerSample = if (request.format == ExportFormat.FLAC) 24 else null,
         fileSizeBytes = verified.fileSizeBytes,
         outputPcmFrames = writtenFrames
       )
@@ -158,7 +154,6 @@ internal class DecodedExportService(
       cancellation.throwIfCancelled()
       if (error is SnapCutMediaException) throw error
       val mapped = when (request.format) {
-        ExportFormat.FLAC -> SnapCutMediaError.FLAC_ENCODER_FAILED
         ExportFormat.MP3 -> SnapCutMediaError.MP3_ENCODER_FAILED
         ExportFormat.M4A -> SnapCutMediaError.AAC_ENCODER_FAILED
       }

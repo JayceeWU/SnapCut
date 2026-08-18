@@ -8,7 +8,6 @@ internal object ExportMath {
   // java.math.BigInteger. Keep this boundary compatible with minSdk 29.
   private val TWO = BigInteger.valueOf(2L)
   private val ONE_HUNDRED = BigInteger.valueOf(100L)
-  private val ONE_THOUSAND = BigInteger.valueOf(1000L)
 
   fun outputSampleRate(sampleRates: Collection<Int>): Int {
     require(sampleRates.isNotEmpty())
@@ -27,16 +26,6 @@ internal object ExportMath {
     val percentage = ceilDivide(BigInteger.valueOf(payloadBytes).multiply(TWO), ONE_HUNDRED)
     val overhead = percentage.max(BigInteger.valueOf(M4A_MINIMUM_OVERHEAD_BYTES))
     return capped(BigInteger.valueOf(payloadBytes).add(overhead))
-  }
-
-  fun estimateFlacBytes(durationMs: Long, sampleRateHz: Int, channelCount: Int): Long {
-    require(durationMs > 0L && sampleRateHz > 0 && channelCount in 1..2)
-    val raw = BigInteger.valueOf(durationMs)
-      .multiply(BigInteger.valueOf(sampleRateHz.toLong()))
-      .multiply(BigInteger.valueOf(channelCount.toLong()))
-      .multiply(BigInteger.valueOf(3L))
-    val rawBytes = ceilDivide(raw, ONE_THOUSAND)
-    return capped(ceilDivide(rawBytes.multiply(BigInteger.valueOf(102L)), ONE_HUNDRED))
   }
 
   fun estimateMp3Bytes(durationMs: Long): Long {

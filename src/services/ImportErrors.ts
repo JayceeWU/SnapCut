@@ -50,9 +50,6 @@ const IMPORT_MESSAGES: Readonly<Record<ImportFailureCode, string>> = {
   AAC_VERIFICATION_FAILED: 'The AAC file could not be verified.',
   EXPORT_DECODE_FAILED: 'A source could not be decoded for export.',
   EXPORT_RESAMPLE_FAILED: 'Audio conversion failed during export.',
-  FLAC_ENCODER_INIT_FAILED: 'The FLAC encoder could not start.',
-  FLAC_ENCODER_FAILED: 'FLAC encoding failed.',
-  FLAC_VERIFICATION_FAILED: 'The FLAC file could not be verified.',
   MP3_ENCODER_INIT_FAILED: 'The MP3 encoder could not start.',
   MP3_ENCODER_FAILED: 'MP3 encoding failed.',
   MP3_VERIFICATION_FAILED: 'The MP3 file could not be verified.',
@@ -89,17 +86,6 @@ const IMPORT_RELEVANT_CODES = new Set<ImportFailureCode>([
   'INVALID_NATIVE_RESULT',
 ]);
 
-const LEGACY_CODE_ALIASES: Readonly<Record<string, ImportFailureCode>> = {
-  PICKER_CANCELLED: 'IMPORT_CANCELLED',
-  SOURCE_SIZE_UNAVAILABLE: 'SOURCE_UNREADABLE',
-  SOURCE_TOO_LARGE_FOR_AVAILABLE_STORAGE: 'SOURCE_TOO_LARGE',
-  M4S_MISSING_INITIALIZATION: 'M4S_INIT_MISSING',
-  DRM_PROTECTED_SOURCE: 'DRM_UNSUPPORTED',
-  IMPORT_REMUX_FAILED: 'OUTPUT_WRITE_FAILED',
-  IMPORT_COPY_FAILED: 'OUTPUT_WRITE_FAILED',
-  INSUFFICIENT_STORAGE: 'DISK_SPACE_LOW',
-};
-
 function candidateCode(error: unknown): string | null {
   if (typeof error !== 'object' || error === null || !('code' in error)) {
     return null;
@@ -125,10 +111,6 @@ export function mapImportError(error: unknown): ImportFailure {
     return importFailure('INVALID_NATIVE_RESULT');
   }
   const candidate = candidateCode(error);
-  const aliased = candidate === null ? undefined : LEGACY_CODE_ALIASES[candidate];
-  if (aliased !== undefined) {
-    return importFailure(aliased);
-  }
   if (candidate !== null && IMPORT_RELEVANT_CODES.has(candidate as ImportFailureCode)) {
     return importFailure(candidate as ImportFailureCode);
   }

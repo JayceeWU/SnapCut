@@ -34,7 +34,7 @@ interface PlaybackState {
   error: string | null;
   setAvailable: (available: boolean) => void;
   beginSession: (session: BeginPlaybackSession) => void;
-  requestPlay: (controlRevision: number) => void;
+  requestPlay: (controlRevision: number, positionMs?: number) => void;
   requestPause: (controlRevision: number) => void;
   cancelSession: (controlRevision: number) => void;
   applyStatus: (event: PlaybackStatusEvent, appIsActive: boolean) => void;
@@ -87,7 +87,7 @@ export const usePlaybackStore = create<PlaybackState>((set) => ({
       error: null,
     }),
 
-  requestPlay: (controlRevision) =>
+  requestPlay: (controlRevision, positionMs) =>
     set((state) =>
       controlRevision < state.controlRevision
         ? state
@@ -95,6 +95,7 @@ export const usePlaybackStore = create<PlaybackState>((set) => ({
             controlRevision,
             desiredPlaying: true,
             pausePending: false,
+            ...(positionMs === undefined ? {} : { positionMs }),
             didJustFinish: false,
             error: null,
           },

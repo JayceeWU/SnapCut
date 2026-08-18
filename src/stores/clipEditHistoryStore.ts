@@ -1,11 +1,14 @@
 import { create } from 'zustand';
 
 import { snapCutProjectSchema } from '@/domain/schemas';
-import type { SnapCutClip, SnapCutProject } from '@/domain/types';
+import type { SnapCutClip, SnapCutCrossfade, SnapCutProject } from '@/domain/types';
 
 export const MAX_CLIP_EDIT_HISTORY = 50;
 
-type ClipSnapshot = SnapCutClip[];
+interface ClipSnapshot {
+  clips: SnapCutClip[];
+  crossfades: SnapCutCrossfade[];
+}
 
 export interface ClipEditHistoryState {
   projectId: string | null;
@@ -32,7 +35,10 @@ let undoStack: ClipSnapshot[] = [];
 let redoStack: ClipSnapshot[] = [];
 
 function snapshotClips(project: SnapCutProject): ClipSnapshot {
-  return project.clips.map((clip) => ({ ...clip }));
+  return {
+    clips: project.clips.map((clip) => ({ ...clip })),
+    crossfades: project.crossfades.map((crossfade) => ({ ...crossfade })),
+  };
 }
 
 function cap(stack: ClipSnapshot[]): void {
@@ -41,11 +47,12 @@ function cap(stack: ClipSnapshot[]): void {
   }
 }
 
-function restoreClips(project: SnapCutProject, clips: ClipSnapshot): SnapCutProject {
+function restoreClips(project: SnapCutProject, snapshot: ClipSnapshot): SnapCutProject {
   return snapCutProjectSchema.parse({
     ...project,
-    clips: clips.map((clip) => ({ ...clip })),
-  }) as SnapCutProject;
+    clips: snapshot.clips.map((clip) => ({ ...clip })),
+    crossfades: snapshot.crossfades.map((crossfade) => ({ ...crossfade })),
+  });
 }
 
 function clearStacks(): void {
@@ -59,7 +66,7 @@ export const useClipEditHistoryStore = create<ClipEditHistoryState>((set, get) =
   canRedo: false,
 
   record: (projectInput) => {
-    const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+    const project = projectInput;
     if (get().projectId !== project.id) clearStacks();
     undoStack.push(snapshotClips(project));
     cap(undoStack);
@@ -68,7 +75,7 @@ export const useClipEditHistoryStore = create<ClipEditHistoryState>((set, get) =
   },
 
   previewUndo: (projectInput) => {
-    const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+    const project = projectInput;
     if (get().projectId !== project.id) {
       get().syncProject(project.id);
       return project;
@@ -79,7 +86,7 @@ export const useClipEditHistoryStore = create<ClipEditHistoryState>((set, get) =
   },
 
   commitUndo: (projectInput) => {
-    const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+    const project = projectInput;
     if (get().projectId !== project.id) {
       get().syncProject(project.id);
       return;
@@ -91,7 +98,7 @@ export const useClipEditHistoryStore = create<ClipEditHistoryState>((set, get) =
   },
 
   previewRedo: (projectInput) => {
-    const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+    const project = projectInput;
     if (get().projectId !== project.id) {
       get().syncProject(project.id);
       return project;
@@ -102,7 +109,7 @@ export const useClipEditHistoryStore = create<ClipEditHistoryState>((set, get) =
   },
 
   commitRedo: (projectInput) => {
-    const project = snapCutProjectSchema.parse(projectInput) as SnapCutProject;
+    const project = projectInput;
     if (get().projectId !== project.id) {
       get().syncProject(project.id);
       return;

@@ -37,7 +37,7 @@ internal object DecodedExportPolicy {
       request.projectId.isBlank() ||
       request.displayNameWithoutExtension.isBlank() ||
       request.generation < 0L ||
-      request.format !in setOf(ExportFormat.M4A, ExportFormat.FLAC, ExportFormat.MP3) ||
+      request.format !in setOf(ExportFormat.M4A, ExportFormat.MP3) ||
       request.m4aPlan != null
     ) {
       throw mediaError(SnapCutMediaError.INVALID_REQUEST)

@@ -22,13 +22,11 @@ class ExportMathTest {
   @Test
   fun `format estimates are conservative and free space includes two copies plus margins`() {
     val m4a = ExportMath.estimateM4aBytes(100_000L)
-    val flac = ExportMath.estimateFlacBytes(1_000L, 48_000, 2)
     val mp3 = ExportMath.estimateMp3Bytes(1_000L)
 
     assertEquals(165_536L, m4a)
-    assertEquals(293_760L, flac)
     assertEquals(105_536L, mp3)
-    assertTrue(ExportMath.requiredFreeBytes(flac) > flac * 2L)
-    assertTrue(ExportMath.requiredFreeBytes(flac) >= ExportMath.WORKING_MARGIN_BYTES)
+    assertTrue(ExportMath.requiredFreeBytes(mp3) > mp3 * 2L)
+    assertTrue(ExportMath.requiredFreeBytes(mp3) >= ExportMath.WORKING_MARGIN_BYTES)
   }
 }

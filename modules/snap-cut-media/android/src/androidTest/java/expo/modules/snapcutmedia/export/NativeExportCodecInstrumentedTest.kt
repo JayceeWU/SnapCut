@@ -114,7 +114,7 @@ class NativeExportCodecInstrumentedTest {
   }
 
   @Test
-  fun flac24AndMp3320EncodeOneCompositionAndPassFreshExtractorValidation() {
+  fun mp3320EncodesOneCompositionAndPassesFreshExtractorValidation() {
     val context = ApplicationProvider.getApplicationContext<android.content.Context>()
     val root = File(context.cacheDir, "snapcut-export-jni-${System.nanoTime()}")
     assertTrue(root.mkdirs())
@@ -124,8 +124,8 @@ class NativeExportCodecInstrumentedTest {
         val frame = sample / 2
         (0.25 * sin(frame * 2.0 * PI * 440.0 / 48_000.0)).toFloat()
       }
-      listOf(ExportFormat.FLAC, ExportFormat.MP3).forEach { format ->
-        val file = File(root, if (format == ExportFormat.FLAC) "test.flac" else "test.mp3")
+      listOf(ExportFormat.MP3).forEach { format ->
+        val file = File(root, "test.mp3")
         val handle = NativeExportCodecBridge.createEncoder(
           CompositionEncoderConfig(
             format = format,

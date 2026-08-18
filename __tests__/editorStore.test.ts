@@ -1,4 +1,4 @@
-import type { SnapCutClip, SnapCutProject, SnapCutSource, WaveformFileV1 } from '@/domain';
+import type { SnapCutClip, SnapCutProject, SnapCutSource, WaveformFile } from '@/domain';
 import { configureEditorServices, useEditorStore } from '@/stores';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
@@ -41,7 +41,9 @@ function project(
   id = PROJECT_ID,
 ): SnapCutProject {
   return {
-    schemaVersion: 7,
+    schemaVersion: 9,
+    crossfades: [],
+    sourceComparisons: [],
     namePromptCompleted: true,
     id,
     name: 'Editor test',
@@ -53,7 +55,7 @@ function project(
   };
 }
 
-function waveform(durationMs: number): WaveformFileV1 {
+function waveform(durationMs: number): WaveformFile {
   return {
     schemaVersion: 1,
     durationMs,
@@ -72,7 +74,7 @@ async function flushWaveforms(): Promise<void> {
   throw new Error('Waveform load did not settle.');
 }
 
-describe('v7 editor store', () => {
+describe('editor store', () => {
   beforeEach(() => {
     configureEditorServices({});
     useEditorStore.getState().reset();
@@ -149,12 +151,12 @@ describe('v7 editor store', () => {
 
   it('discards waveform results from a project that is no longer active', async () => {
     const ready = source(SOURCE_A_ID, 30_000, 'ready');
-    let resolveWaveform!: (value: WaveformFileV1) => void;
+    let resolveWaveform!: (value: WaveformFile) => void;
     configureEditorServices({
       waveformReader: {
         loadWaveform: jest.fn(
           () =>
-            new Promise<WaveformFileV1>((resolve) => {
+            new Promise<WaveformFile>((resolve) => {
               resolveWaveform = resolve;
             }),
         ),

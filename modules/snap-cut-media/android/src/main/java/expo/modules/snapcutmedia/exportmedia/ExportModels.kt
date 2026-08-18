@@ -52,7 +52,6 @@ internal data class ExportAudioResultData(
   val sampleRateHz: Int,
   val channelCount: Int,
   val bitrateKbps: Int?,
-  val bitsPerSample: Int?,
   val maxBoundaryAdjustmentMs: Long,
   val fileSizeBytes: Long
 ) {
@@ -66,7 +65,6 @@ internal data class ExportAudioResultData(
     "sampleRateHz" to sampleRateHz,
     "channelCount" to channelCount,
     "bitrateKbps" to bitrateKbps,
-    "bitsPerSample" to bitsPerSample,
     "maxBoundaryAdjustmentMs" to maxBoundaryAdjustmentMs,
     "fileSizeBytes" to fileSizeBytes
   )
@@ -74,7 +72,6 @@ internal data class ExportAudioResultData(
 
 internal data class ExportCodecCapabilities(
   val aacAvailable: Boolean,
-  val flacAvailable: Boolean,
   val mp3Available: Boolean,
   val resamplerAvailable: Boolean
 )

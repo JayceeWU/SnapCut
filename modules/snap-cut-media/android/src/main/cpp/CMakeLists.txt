@@ -28,7 +28,6 @@ function(snapcut_enable_16k_page_alignment target_name)
 endfunction()
 
 set(SNAPCUT_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-set(SNAPCUT_FLAC_VERSION "1.5.0" CACHE STRING "Pinned libFLAC source version")
 set(SNAPCUT_LAME_VERSION "4.0" CACHE STRING "Pinned LAME source version")
 set(
   SNAPCUT_LIBSAMPLERATE_VERSION
@@ -37,9 +36,6 @@ set(
   "Pinned libsamplerate source version"
 )
 
-if(NOT SNAPCUT_FLAC_VERSION STREQUAL "1.5.0")
-  message(FATAL_ERROR "SnapCut requires libFLAC 1.5.0")
-endif()
 if(NOT SNAPCUT_LAME_VERSION STREQUAL "4.0")
   message(FATAL_ERROR "SnapCut requires LAME 4.0")
 endif()
@@ -47,26 +43,7 @@ if(NOT SNAPCUT_LIBSAMPLERATE_VERSION STREQUAL "0.2.2")
   message(FATAL_ERROR "SnapCut requires libsamplerate 0.2.2")
 endif()
 
-# libFLAC is built from the pinned official source tree. SnapCut only uses the
-# library: command-line programs, examples, tests, docs, C++ bindings, Ogg, and
-# install/package targets are disabled.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static third-party libraries" FORCE)
-set(BUILD_CXXLIBS OFF CACHE BOOL "Do not build libFLAC++" FORCE)
-set(BUILD_PROGRAMS OFF CACHE BOOL "Do not build FLAC command-line programs" FORCE)
-set(BUILD_EXAMPLES OFF CACHE BOOL "Do not build FLAC examples" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "Do not build third-party tests" FORCE)
-set(BUILD_DOCS OFF CACHE BOOL "Do not build FLAC documentation" FORCE)
-set(BUILD_UTILS OFF CACHE BOOL "Do not build FLAC utilities" FORCE)
-set(WITH_OGG OFF CACHE BOOL "SnapCut does not use Ogg-FLAC" FORCE)
-set(WITH_ASM OFF CACHE BOOL "Use portable libFLAC sources" FORCE)
-set(INSTALL_MANPAGES OFF CACHE BOOL "Do not install FLAC man pages" FORCE)
-set(INSTALL_PKGCONFIG_MODULES OFF CACHE BOOL "Do not install FLAC pkg-config files" FORCE)
-set(INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "Do not install FLAC CMake files" FORCE)
-add_subdirectory(
-  "${SNAPCUT_THIRD_PARTY_DIR}/flac-${SNAPCUT_FLAC_VERSION}"
-  "${CMAKE_CURRENT_BINARY_DIR}/flac-${SNAPCUT_FLAC_VERSION}"
-  EXCLUDE_FROM_ALL
-)
 
 # libsamplerate's official CMake target is library-only with these switches.
 set(LIBSAMPLERATE_EXAMPLES OFF CACHE BOOL "Do not build libsamplerate examples" FORCE)
@@ -142,7 +119,6 @@ target_link_options(snapcut_codec PRIVATE "LINKER:--gc-sections")
 
 find_library(ANDROID_LOG_LIBRARY log REQUIRED)
 target_link_libraries(snapcut_codec PRIVATE
-  FLAC
   mp3lame
   samplerate
   ${ANDROID_LOG_LIBRARY}

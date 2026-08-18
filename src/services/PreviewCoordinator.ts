@@ -1,7 +1,11 @@
 import { AppState, type AppStateStatus } from 'react-native';
 import { randomUUID } from 'expo-crypto';
 
-import { compositionDurationMs, validateClipRange } from '@/domain';
+import {
+  COMPARISON_PREVIEW_CONTEXT_MS,
+  compositionDurationMs,
+  validateSourceComparisonBookmark,
+} from '@/domain';
 import type { SnapCutClip, SnapCutProject, SnapCutSource } from '@/domain';
 import { diagnosticLog } from '@/diagnostics';
 import SnapCutMedia from '@/native/SnapCutMedia';
@@ -133,15 +137,39 @@ const clipKey = (clip: SnapCutClip): string =>
 const selectionKey = (projectId: string, clip: SnapCutClip): string =>
   `selection:${projectId}:${clipKey(clip)}`;
 
+const comparisonKey = (
+  projectId: string,
+  sourceId: string,
+  firstMs: number,
+  secondMs: number,
+): string => `comparison:${projectId}:${sourceId}:${firstMs}:${secondMs}`;
+
+const comparisonResultKey = (
+  projectId: string,
+  sourceId: string,
+  firstMs: number,
+  secondMs: number,
+): string => `comparison-result:${projectId}:${sourceId}:${firstMs}:${secondMs}`;
+
+const COMPARISON_BEFORE_CLIP_ID = '00000000-0000-4000-8000-000000000001';
+const COMPARISON_AFTER_CLIP_ID = '00000000-0000-4000-8000-000000000002';
+const COMPARISON_RESULT_BEFORE_CLIP_ID = '00000000-0000-4000-8000-000000000003';
+const COMPARISON_RESULT_AFTER_CLIP_ID = '00000000-0000-4000-8000-000000000004';
+
 const compositionKey = (project: SnapCutProject): string =>
-  `composition:${project.id}:${project.clips.map(clipKey).join('|')}`;
+  `composition:${project.id}:${project.clips.map(clipKey).join('|')}:${project.crossfades
+    .map(
+      ({ id, leftClipId, rightClipId, durationMs }) =>
+        `${id}:${leftClipId}:${rightClipId}:${durationMs}`,
+    )
+    .join('|')}`;
 
 const clampInteger = (value: number, minimum: number, maximum: number): number =>
   Math.min(Math.max(Math.round(Number.isFinite(value) ? value : 0), minimum), maximum);
 
 /**
- * Keeps the native two-track engine private while adapting the persisted v7
- * clip order to one gap-free, unity-gain Track 1 timeline.
+ * Keeps the native two-track engine private while adapting persisted ordered
+ * clips and optional adjacent crossfades to a gap-free timeline.
  */
 export function buildNativeSequentialClips(
   project: SnapCutProject,
@@ -149,8 +177,8 @@ export function buildNativeSequentialClips(
   sourceResolver: CommittedSourceResolverPort,
 ): NativePreviewClip[] {
   let timelineStartMs = 0;
-  return clips.map((clipInput) => {
-    const clip = validateClipRange(clipInput, project.sources);
+  let previousTrack: 'track-1' | 'track-2' = 'track-1';
+  return clips.map((clip) => {
     const source = project.sources.find(({ id }) => id === clip.sourceId);
     if (!source) {
       throw new PreviewCoordinatorError(
@@ -158,6 +186,10 @@ export function buildNativeSequentialClips(
         `Clip source is not committed in project ${project.id}.`,
       );
     }
+    const incoming = project.crossfades.find(({ rightClipId }) => rightClipId === clip.id);
+    const outgoing = project.crossfades.find(({ leftClipId }) => leftClipId === clip.id);
+    const incomingHalfMs = (incoming?.durationMs ?? 0) / 2;
+    const outgoingHalfMs = (outgoing?.durationMs ?? 0) / 2;
     const durationMs = clip.endMs - clip.startMs;
     const timelineEndMs = timelineStartMs + durationMs;
     if (!Number.isSafeInteger(timelineEndMs)) {
@@ -166,21 +198,74 @@ export function buildNativeSequentialClips(
         'Composition duration exceeds the supported range.',
       );
     }
+    const overlapsPrevious = incoming !== undefined;
+    const trackId = overlapsPrevious
+      ? previousTrack === 'track-1'
+        ? 'track-2'
+        : 'track-1'
+      : 'track-1';
     const nativeClip: NativePreviewClip = {
       clipId: clip.id,
       sourceId: source.id,
       audioFileUri: sourceResolver.resolveSourceAudioUri(project, source),
-      startMs: clip.startMs,
-      endMs: clip.endMs,
-      trackId: 'track-1',
-      timelineStartMs,
+      startMs: clip.startMs - incomingHalfMs,
+      endMs: clip.endMs + outgoingHalfMs,
+      trackId,
+      timelineStartMs: timelineStartMs - incomingHalfMs,
       gain: 1,
-      fadeInMs: 0,
-      fadeOutMs: 0,
+      fadeInMs: incoming?.durationMs ?? 0,
+      fadeOutMs: outgoing?.durationMs ?? 0,
     };
     timelineStartMs = timelineEndMs;
+    previousTrack = trackId;
     return nativeClip;
   });
+}
+
+function buildComparisonPreviewClips(
+  project: SnapCutProject,
+  source: SnapCutSource,
+  firstMs: number,
+  secondMs: number,
+): SnapCutClip[] {
+  const bookmark = validateSourceComparisonBookmark(project, source.id, firstMs, secondMs);
+  return [
+    {
+      id: COMPARISON_BEFORE_CLIP_ID,
+      sourceId: source.id,
+      startMs: Math.max(0, bookmark.firstMs - COMPARISON_PREVIEW_CONTEXT_MS),
+      endMs: bookmark.firstMs,
+    },
+    {
+      id: COMPARISON_AFTER_CLIP_ID,
+      sourceId: source.id,
+      startMs: bookmark.secondMs,
+      endMs: Math.min(source.durationMs, bookmark.secondMs + COMPARISON_PREVIEW_CONTEXT_MS),
+    },
+  ];
+}
+
+function buildComparisonResultClips(
+  project: SnapCutProject,
+  source: SnapCutSource,
+  firstMs: number,
+  secondMs: number,
+): SnapCutClip[] {
+  const bookmark = validateSourceComparisonBookmark(project, source.id, firstMs, secondMs);
+  return [
+    {
+      id: COMPARISON_RESULT_BEFORE_CLIP_ID,
+      sourceId: source.id,
+      startMs: 0,
+      endMs: bookmark.firstMs,
+    },
+    {
+      id: COMPARISON_RESULT_AFTER_CLIP_ID,
+      sourceId: source.id,
+      startMs: bookmark.secondMs,
+      endMs: source.durationMs,
+    },
+  ];
 }
 
 export class PreviewCoordinator {
@@ -251,8 +336,7 @@ export class PreviewCoordinator {
   }
 
   async loadSelection(project: SnapCutProject, clipInput: SnapCutClip): Promise<boolean> {
-    const clip = validateClipRange(clipInput, project.sources);
-    return this.load('selection', project, [clip], selectionKey(project.id, clip), {
+    return this.load('selection', project, [clipInput], selectionKey(project.id, clipInput), {
       operationToken: ++this.operationToken,
       desiredPlaying: false,
       initialControlRevision: 0,
@@ -263,8 +347,7 @@ export class PreviewCoordinator {
     if (project.clips.length === 0) {
       throw new PreviewCoordinatorError('EMPTY_COMPOSITION', 'Composition preview needs a clip.');
     }
-    const clips = project.clips.map((clip) => validateClipRange(clip, project.sources));
-    return this.load('composition', project, clips, compositionKey(project), {
+    return this.load('composition', project, project.clips, compositionKey(project), {
       operationToken: ++this.operationToken,
       desiredPlaying: false,
       initialControlRevision: 0,
@@ -291,24 +374,113 @@ export class PreviewCoordinator {
     });
   }
 
-  async toggleComposition(project: SnapCutProject, startPositionMs?: number): Promise<void> {
-    const key = compositionKey(project);
+  async toggleSourceAt(
+    project: SnapCutProject,
+    source: SnapCutSource,
+    startPositionMs: number,
+  ): Promise<void> {
+    const clip: SnapCutClip = {
+      id: source.id,
+      sourceId: source.id,
+      startMs: 0,
+      endMs: source.durationMs,
+    };
+    const key = selectionKey(project.id, clip);
     if (this.active?.key === key) {
       const state = usePlaybackStore.getState();
-      if (state.desiredPlaying || state.playing) await this.pauseComposition();
-      else await this.playComposition(project, startPositionMs);
+      if (state.desiredPlaying || state.playing) await this.pause();
+      else await this.playSelection(project, clip, startPositionMs);
       return;
     }
-    await this.playComposition(project, startPositionMs);
+    await this.playSelection(project, clip, startPositionMs);
   }
 
-  async playSelection(project: SnapCutProject, clipInput: SnapCutClip): Promise<void> {
-    const clip = validateClipRange(clipInput, project.sources);
-    const key = selectionKey(project.id, clip);
+  async toggleComparison(
+    project: SnapCutProject,
+    source: SnapCutSource,
+    firstMs: number,
+    secondMs: number,
+  ): Promise<void> {
+    const key = comparisonKey(project.id, source.id, firstMs, secondMs);
+    if (this.active?.key === key) {
+      const state = usePlaybackStore.getState();
+      if (state.desiredPlaying || state.playing) await this.pause();
+      else await this.playComparison(project, source, firstMs, secondMs);
+      return;
+    }
+    await this.playComparison(project, source, firstMs, secondMs);
+  }
+
+  async playComparison(
+    project: SnapCutProject,
+    source: SnapCutSource,
+    firstMs: number,
+    secondMs: number,
+  ): Promise<void> {
+    const clips = buildComparisonPreviewClips(project, source, firstMs, secondMs);
+    const key = comparisonKey(project.id, source.id, firstMs, secondMs);
     const operationToken = ++this.operationToken;
     let active = this.active?.key === key ? this.active : null;
     if (active === null) {
-      const loaded = await this.load('selection', project, [clip], key, {
+      const loaded = await this.load('selection', project, clips, key, {
+        operationToken,
+        desiredPlaying: true,
+        initialControlRevision: 1,
+      });
+      if (!loaded) return;
+      active = this.active;
+    } else {
+      active.controlRevision += 1;
+      usePlaybackStore.getState().requestPlay(active.controlRevision, 0);
+    }
+    if (!active || !this.isCurrentPlayIntent(active, operationToken)) return;
+    if (!active.loadResolved) {
+      active.pendingSeek = {
+        positionMs: 0,
+        resumeAfterSeek: false,
+        controlRevision: active.controlRevision,
+      };
+      active.pendingPlayRevision = active.controlRevision;
+      return;
+    }
+    await this.issueSeek(active, 0, false, operationToken);
+    if (this.isCurrentPlayIntent(active, operationToken)) {
+      await this.issuePlay(active, operationToken);
+    }
+  }
+
+  async toggleComparisonResult(
+    project: SnapCutProject,
+    source: SnapCutSource,
+    firstMs: number,
+    secondMs: number,
+    startPositionMs: number,
+  ): Promise<void> {
+    const key = comparisonResultKey(project.id, source.id, firstMs, secondMs);
+    if (this.active?.key === key) {
+      const state = usePlaybackStore.getState();
+      if (state.desiredPlaying || state.playing) await this.pause();
+      else await this.playComparisonResult(project, source, firstMs, secondMs, startPositionMs);
+      return;
+    }
+    await this.playComparisonResult(project, source, firstMs, secondMs, startPositionMs);
+  }
+
+  async playComparisonResult(
+    project: SnapCutProject,
+    source: SnapCutSource,
+    firstMs: number,
+    secondMs: number,
+    startPositionMs: number,
+  ): Promise<void> {
+    const clips = buildComparisonResultClips(project, source, firstMs, secondMs);
+    const key = comparisonResultKey(project.id, source.id, firstMs, secondMs);
+    const durationMs = compositionDurationMs(clips);
+    const requestedStart = clampInteger(startPositionMs, 0, durationMs);
+    const operationToken = ++this.operationToken;
+    let active = this.active?.key === key ? this.active : null;
+    if (active === null) {
+      const loaded = await this.load('selection', project, clips, key, {
         operationToken,
         desiredPlaying: true,
         initialControlRevision: 1,
@@ -321,9 +493,74 @@ export class PreviewCoordinator {
     }
     if (!active || !this.isCurrentPlayIntent(active, operationToken)) return;
     if (!active.loadResolved) {
+      active.pendingSeek = {
+        positionMs: requestedStart,
+        resumeAfterSeek: false,
+        controlRevision: active.controlRevision,
+      };
       active.pendingPlayRevision = active.controlRevision;
       return;
     }
+    if (requestedStart !== usePlaybackStore.getState().positionMs) {
+      await this.issueSeek(active, requestedStart, false, operationToken);
+    }
+    if (this.isCurrentPlayIntent(active, operationToken)) {
+      await this.issuePlay(active, operationToken);
+    }
+  }
+
+  async toggleComposition(project: SnapCutProject, startPositionMs?: number): Promise<void> {
+    const key = compositionKey(project);
+    if (this.active?.key === key) {
+      const state = usePlaybackStore.getState();
+      if (state.desiredPlaying || state.playing) await this.pauseComposition();
+      else await this.playComposition(project, startPositionMs);
+      return;
+    }
+    await this.playComposition(project, startPositionMs);
+  }
+
+  async playSelection(
+    project: SnapCutProject,
+    clipInput: SnapCutClip,
+    startPositionMs?: number,
+  ): Promise<void> {
+    const clip = clipInput;
+    const key = selectionKey(project.id, clipInput);
+    const requestedStart =
+      startPositionMs === undefined
+        ? undefined
+        : clampInteger(startPositionMs, 0, clip.endMs - clip.startMs);
+    const operationToken = ++this.operationToken;
+    let active = this.active?.key === key ? this.active : null;
+    if (active === null) {
+      const loaded = await this.load('selection', project, [clip], key, {
+        operationToken,
+        desiredPlaying: true,
+        initialControlRevision: 1,
+      });
+      if (!loaded) return;
+      active = this.active;
+    } else {
+      active.controlRevision += 1;
+      usePlaybackStore.getState().requestPlay(active.controlRevision, requestedStart);
+    }
+    if (!active || !this.isCurrentPlayIntent(active, operationToken)) return;
+    if (!active.loadResolved) {
+      if (requestedStart !== undefined) {
+        active.pendingSeek = {
+          positionMs: requestedStart,
+          resumeAfterSeek: false,
+          controlRevision: active.controlRevision,
+        };
+      }
+      active.pendingPlayRevision = active.controlRevision;
+      return;
+    }
+    if (requestedStart !== undefined && requestedStart !== usePlaybackStore.getState().positionMs) {
+      await this.issueSeek(active, requestedStart, false, operationToken);
+    }
+    if (!this.isCurrentPlayIntent(active, operationToken)) return;
     await this.issuePlay(active, operationToken);
   }
 
@@ -331,7 +568,7 @@ export class PreviewCoordinator {
     if (project.clips.length === 0) {
       throw new PreviewCoordinatorError('EMPTY_COMPOSITION', 'Composition preview needs a clip.');
     }
-    const clips = project.clips.map((clip) => validateClipRange(clip, project.sources));
+    const clips = project.clips;
     const key = compositionKey(project);
     const durationMs = compositionDurationMs(clips);
     const requestedStart =

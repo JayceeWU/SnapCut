@@ -7,7 +7,9 @@ import {
 } from '@/stores';
 
 const createFixture = (id: string, name: string, updatedAt: string): SnapCutProject => ({
-  schemaVersion: 7,
+  schemaVersion: 9,
+  crossfades: [],
+  sourceComparisons: [],
   namePromptCompleted: true,
   id,
   name,
@@ -139,7 +141,7 @@ describe('project store repository coordination', () => {
       sources: [
         {
           id: '11111111-1111-4111-8111-111111111111',
-          displayName: 'Source 1',
+          displayName: 'S1',
           originalMimeType: null,
           sourceKind: 'm4a',
           privateAudioFileName: 'source.m4a',

@@ -1,5 +1,6 @@
 import {
   addClip,
+  addCrossfade,
   addSource,
   createProject,
   deleteClip,
@@ -19,7 +20,7 @@ const UPDATED_AT = '2026-08-12T20:01:00.000Z';
 function source(): SnapCutSource {
   return {
     id: SOURCE_ID,
-    displayName: 'session.m4a',
+    displayName: 'Sess1',
     originalMimeType: 'audio/mp4',
     sourceKind: 'm4a',
     privateAudioFileName: 'source.m4a',
@@ -85,6 +86,29 @@ describe('clip edit history store', () => {
     expect(redone.clips[0]?.endMs).toBe(3_000);
     expect(redone.sources).toEqual(latest.sources);
     useClipEditHistoryStore.getState().commitRedo(undone);
+  });
+
+  test('undoes and redoes crossfades in the same atomic edit snapshot', () => {
+    let before = project();
+    before = addClip(before, {
+      id: '55555555-5555-4555-8555-555555555555',
+      sourceId: SOURCE_ID,
+      startMs: 5_000,
+      endMs: 10_000,
+    });
+    useClipEditHistoryStore.getState().record(before);
+    const edited = addCrossfade(before, {
+      id: '66666666-6666-4666-8666-666666666666',
+      leftClipId: CLIP_ID,
+      rightClipId: '55555555-5555-4555-8555-555555555555',
+      durationMs: 2_000,
+    });
+
+    const undone = useClipEditHistoryStore.getState().previewUndo(edited);
+    expect(undone.crossfades).toEqual([]);
+    useClipEditHistoryStore.getState().commitUndo(edited);
+    const redone = useClipEditHistoryStore.getState().previewRedo(undone);
+    expect(redone.crossfades).toEqual(edited.crossfades);
   });
 
   test('a new edit clears redo and project switches or reset clear both stacks', () => {

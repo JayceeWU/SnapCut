@@ -4,17 +4,6 @@ SnapCut includes the following source-built native libraries. The pinned
 release URLs and SHA-256 checksums are recorded in
 `modules/snap-cut-media/android/src/main/cpp/third_party/SOURCES.lock.json`.
 
-## FLAC 1.5.0
-
-- Project: https://xiph.org/flac/
-- Source: https://downloads.xiph.org/releases/flac/flac-1.5.0.tar.xz
-- Archive SHA-256: `f2c1c76592a82ffff8413ba3c4a1299b6c7ab06c734dee03fd88630485c2b920`
-- License: Xiph.org BSD-style license for libFLAC
-- License text: `modules/snap-cut-media/android/src/main/cpp/third_party/flac-1.5.0/COPYING.Xiph`
-
-SnapCut builds only the libFLAC library target. FLAC command-line programs,
-tests, examples, documentation, C++ bindings, and Ogg support are disabled.
-
 ## LAME 4.0
 
 - Project: https://lame.sourceforge.io/

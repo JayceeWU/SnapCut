@@ -9,7 +9,7 @@ import {
 
 import { colors, minimumTouchTarget, radii, spacing, typography } from '@/constants';
 
-export type AppButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
+type AppButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 
 interface AppButtonProps {
   label: string;

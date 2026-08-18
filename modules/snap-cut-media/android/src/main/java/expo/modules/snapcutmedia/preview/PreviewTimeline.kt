@@ -93,11 +93,21 @@ internal class PreviewTimeline private constructor(
     private const val MINIMUM_CLIP_DURATION_MS = 100L
 
     fun create(mode: PreviewMode, inputClips: List<PreviewClip>): PreviewTimeline {
-      if (inputClips.isEmpty() || (mode == PreviewMode.SELECTION && inputClips.size != 1)) {
+      if (inputClips.isEmpty() || (mode == PreviewMode.SELECTION && inputClips.size !in 1..2)) {
         throw mediaError(SnapCutMediaError.INVALID_REQUEST)
       }
       val normalized = if (mode == PreviewMode.SELECTION) {
-        listOf(inputClips.single().copy(trackId = TrackId.TRACK_1, timelineStartMs = 0L))
+        var timelineStartMs = 0L
+        inputClips.map { clip ->
+          val normalizedClip = clip.copy(
+            trackId = TrackId.TRACK_1,
+            timelineStartMs = timelineStartMs
+          )
+          timelineStartMs = runCatching(normalizedClip::timelineEndMs).getOrElse {
+            throw mediaError(SnapCutMediaError.INVALID_CLIP_RANGE, cause = it)
+          }
+          normalizedClip
+        }
       } else {
         inputClips.sortedWith(
           compareBy<PreviewClip> { it.timelineStartMs }

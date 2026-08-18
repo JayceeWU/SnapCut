@@ -34,7 +34,7 @@ describe('ExportModal', () => {
       );
     useExportStore.getState().preflightReady({
       contractVersion: 1,
-      preferredFormat: 'flac',
+      preferredFormat: 'mp3',
       mayClip: false,
       m4aPlan: unavailablePlan,
       formats: [
@@ -47,16 +47,6 @@ describe('ExportModal', () => {
           requiredFreeBytes: null,
           sampleRateHz: null,
           channelCount: null,
-        },
-        {
-          format: 'flac',
-          mode: 'flac-lossless-encode',
-          available: true,
-          reasons: [],
-          estimatedOutputBytes: 2_000_000,
-          requiredFreeBytes: 4_000_000,
-          sampleRateHz: 48_000,
-          channelCount: 2,
         },
         {
           format: 'mp3',
@@ -84,7 +74,6 @@ describe('ExportModal', () => {
     expect(screen.getByText('AAC stream copy is unavailable for this composition.')).toBeTruthy();
     expect(screen.getByText(copy.export.compositionDuration('0:12'))).toBeTruthy();
     expect(screen.getByRole('radio', { name: copy.export.m4a })).toBeDisabled();
-    expect(screen.queryByRole('radio', { name: copy.export.flac })).toBeNull();
     expect(useExportStore.getState().selectedFormat).toBe('mp3');
     await fireEvent.press(screen.getByRole('radio', { name: copy.export.mp3 }));
     expect(useExportStore.getState().selectedFormat).toBe('mp3');
@@ -126,16 +115,6 @@ describe('ExportModal', () => {
           channelCount: 2,
         },
         {
-          format: 'flac',
-          mode: 'flac-lossless-encode',
-          available: true,
-          reasons: [],
-          estimatedOutputBytes: 2_000_000,
-          requiredFreeBytes: 4_000_000,
-          sampleRateHz: 48_000,
-          channelCount: 2,
-        },
-        {
           format: 'mp3',
           mode: 'mp3-lossy-encode',
           available: true,
@@ -161,10 +140,8 @@ describe('ExportModal', () => {
     expect(screen.getByText(copy.export.mixClippingWarning)).toBeTruthy();
     expect(screen.getByText(copy.export.estimatedSize('391 KB'))).toBeTruthy();
     expect(screen.getByText(copy.export.estimatedSize('488 KB'))).toBeTruthy();
-    expect(screen.queryByRole('radio', { name: copy.export.flac })).toBeNull();
     expect(screen.queryByText(/48,000 Hz/u)).toBeNull();
     expect(screen.queryByText(/Cut points will be adjusted/u)).toBeNull();
-    expect(screen.queryByText(/FLAC preserves the exported PCM/u)).toBeNull();
   });
 
   it('shows the saved location, actual duration, and M4A boundary adjustment on success', async () => {
@@ -178,7 +155,6 @@ describe('ExportModal', () => {
       sampleRateHz: 48_000,
       channelCount: 2,
       bitrateKbps: null,
-      bitsPerSample: null,
       maxBoundaryAdjustmentMs: 12,
       fileSizeBytes: 500_000,
     });
@@ -196,7 +172,6 @@ describe('ExportModal', () => {
     expect(screen.getByText(copy.export.successMessage('Purple export.m4a'))).toBeTruthy();
     expect(screen.getByText(copy.export.successDuration('0:12'))).toBeTruthy();
     expect(screen.getByText(copy.export.successBoundaryAdjustment(12))).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
     expect(screen.getByRole('button', { name: copy.export.closeAction })).toBeTruthy();
   });
 });

@@ -1,5 +1,6 @@
 import {
   addClip,
+  createProject,
   immutableSourceMetadata,
   removeUnusedSource,
   snapCutProjectSchema,
@@ -11,7 +12,10 @@ import {
 import { AtomicJsonStore } from '@/repositories/AtomicJsonStore';
 import { ProjectRepository } from '@/repositories/ProjectRepository';
 import { sourceDeletionJournalSchema } from '@/repositories/SourceDeletionTransaction';
-import { StorageGenerationService } from '@/repositories/StorageGenerationService';
+import {
+  CURRENT_STORAGE_GENERATION,
+  StorageGenerationService,
+} from '@/repositories/StorageGenerationService';
 import { StorageLayout } from '@/repositories/StorageLayout';
 import { RecoveryService } from '@/services/RecoveryService';
 
@@ -29,7 +33,7 @@ const FILE_SIZE = 4_096;
 function importedSource(overrides: Partial<SnapCutSource> = {}): SnapCutSource {
   return {
     id: SOURCE_ID,
-    displayName: 'Source 1',
+    displayName: 'S1',
     originalMimeType: null,
     sourceKind: 'm4a',
     privateAudioFileName: 'source.m4a',
@@ -123,7 +127,7 @@ async function setupCorruptProject(options: { journal?: unknown } = {}) {
   layout.ensureBaseDirectories();
   fileSystem.writeText(
     layout.storageGenerationUri,
-    JSON.stringify({ schemaVersion: 1, generation: 7 }),
+    JSON.stringify({ schemaVersion: 1, generation: CURRENT_STORAGE_GENERATION }),
   );
   fileSystem.ensureDirectory(layout.projectDirectoryUri(PROJECT_ID));
   fileSystem.writeText(layout.projectMetadataUri(PROJECT_ID), '{broken');
@@ -134,7 +138,7 @@ async function setupCorruptProject(options: { journal?: unknown } = {}) {
   return { fileSystem, layout, repository, ...pending };
 }
 
-describe('v7 storage generation reset', () => {
+describe('storage generation reset', () => {
   it('removes only old private editing state and writes the marker last', async () => {
     const fileSystem = new MemoryStorageFileSystem();
     const layout = new StorageLayout(fileSystem);
@@ -202,7 +206,7 @@ describe('v7 storage generation reset', () => {
   });
 });
 
-describe('v7 import and source lifecycle repository', () => {
+describe('import and source lifecycle repository', () => {
   it('commits import as Source only and writes an immutable v2 manifest', async () => {
     const { fileSystem, layout, project } = await setupImportedProject();
     expect(project.sources).toHaveLength(1);
@@ -218,8 +222,12 @@ describe('v7 import and source lifecycle repository', () => {
 
   it('renames duplicate-friendly source metadata without creating a repair mismatch', async () => {
     const { repository } = await setupImportedProject();
-    const renamed = await repository.renameSource(PROJECT_ID, SOURCE_ID, '  Voice 🎵  ');
-    expect(renamed.sources[0]?.displayName).toBe('Voice 🎵');
+    const renamed = await repository.renameSource(PROJECT_ID, SOURCE_ID, '  音乐🎵  ');
+    expect(renamed.sources[0]?.displayName).toBe('音乐🎵');
+    await expect(repository.renameSource(PROJECT_ID, SOURCE_ID, '1234567')).rejects.toThrow(
+      'Source name must contain 1 to 6 Unicode characters.',
+    );
+    expect(repository.get(PROJECT_ID)?.sources[0]?.displayName).toBe('音乐🎵');
     expect(repository.getRepairStatus(PROJECT_ID)).toEqual({ state: 'ready', issues: [] });
   });
 

@@ -22,7 +22,6 @@ enum class AacProfile(val value: String) : Enumerable {
 
 enum class ExportFormat(val value: String) : Enumerable {
   M4A("m4a"),
-  FLAC("flac"),
   MP3("mp3")
 }
 
@@ -216,12 +215,6 @@ data class ExportAudioRequest(
   @Field val outputSampleRateHz: Int?,
   @Field val outputChannelCount: Int?,
   @Field val m4aPlan: M4aExportPlan?
-) : Record
-
-@OptimizedRecord
-data class ShareExportRequest(
-  @Field val contentUri: String,
-  @Field val format: ExportFormat
 ) : Record
 
 @OptimizedRecord

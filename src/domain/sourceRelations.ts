@@ -1,21 +1,17 @@
-import { immutableSourceManifestSchema, snapCutSourceSchema } from './schemas';
 import type { ImmutableSourceManifest, SnapCutSource } from './types';
-
-export type ImmutableSourceMetadata = ImmutableSourceManifest;
 
 /**
  * source.json is an immutable import manifest. User-facing name and waveform
  * lifecycle belong only to project.json and can change without media repair.
  */
-export function immutableSourceMetadata(sourceInput: SnapCutSource): ImmutableSourceMetadata {
-  const source = snapCutSourceSchema.parse(sourceInput) as SnapCutSource;
+export function immutableSourceMetadata(sourceInput: SnapCutSource): ImmutableSourceManifest {
   const {
     displayName: _displayName,
     waveformFileName: _waveformFileName,
     waveformStatus: _waveformStatus,
     ...immutable
-  } = source;
-  return immutableSourceManifestSchema.parse(immutable) as ImmutableSourceManifest;
+  } = sourceInput;
+  return immutable;
 }
 
 export function sourceMetadataMatchesProjectSource(
@@ -23,7 +19,22 @@ export function sourceMetadataMatchesProjectSource(
   projectSource: SnapCutSource,
 ): boolean {
   return (
-    JSON.stringify(immutableSourceManifestSchema.parse(sourceFileSource)) ===
-    JSON.stringify(immutableSourceMetadata(projectSource))
+    sourceFileSource.id === projectSource.id &&
+    sourceFileSource.originalMimeType === projectSource.originalMimeType &&
+    sourceFileSource.sourceKind === projectSource.sourceKind &&
+    sourceFileSource.privateAudioFileName === projectSource.privateAudioFileName &&
+    sourceFileSource.durationMs === projectSource.durationMs &&
+    sourceFileSource.codecMime === projectSource.codecMime &&
+    sourceFileSource.sampleRateHz === projectSource.sampleRateHz &&
+    sourceFileSource.channelCount === projectSource.channelCount &&
+    sourceFileSource.encodedBitrateBps === projectSource.encodedBitrateBps &&
+    sourceFileSource.pcmBitsPerSample === projectSource.pcmBitsPerSample &&
+    sourceFileSource.fileSizeBytes === projectSource.fileSizeBytes &&
+    sourceFileSource.createdAt === projectSource.createdAt &&
+    sourceFileSource.aacProfile === projectSource.aacProfile &&
+    sourceFileSource.codecConfigFingerprint === projectSource.codecConfigFingerprint &&
+    sourceFileSource.encoderDelayFrames === projectSource.encoderDelayFrames &&
+    sourceFileSource.encoderPaddingFrames === projectSource.encoderPaddingFrames &&
+    sourceFileSource.privateAudioSha256 === projectSource.privateAudioSha256
   );
 }

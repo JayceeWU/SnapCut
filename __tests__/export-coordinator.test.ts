@@ -29,7 +29,9 @@ function flushTasks(): Promise<void> {
 
 function project(): SnapCutProject {
   return {
-    schemaVersion: 7,
+    schemaVersion: 9,
+    crossfades: [],
+    sourceComparisons: [],
     namePromptCompleted: true,
     id: PROJECT_ID,
     name: 'Purple rehearsal',
@@ -38,7 +40,7 @@ function project(): SnapCutProject {
     sources: [
       {
         id: SOURCE_ID,
-        displayName: 'source.m4a',
+        displayName: 'S1',
         originalMimeType: 'audio/mp4',
         sourceKind: 'm4a',
         privateAudioFileName: 'source.m4a',
@@ -122,16 +124,6 @@ function preflight(): ExportPreflightResult {
         channelCount: 2,
       },
       {
-        format: 'flac',
-        mode: 'flac-lossless-encode',
-        available: true,
-        reasons: [],
-        estimatedOutputBytes: 800_000,
-        requiredFreeBytes: 1_600_000,
-        sampleRateHz: 48_000,
-        channelCount: 2,
-      },
-      {
         format: 'mp3',
         mode: 'mp3-lossy-encode',
         available: true,
@@ -155,7 +147,6 @@ const exportResult: ExportAudioResult = {
   sampleRateHz: 48_000,
   channelCount: 2,
   bitrateKbps: null,
-  bitsPerSample: null,
   maxBoundaryAdjustmentMs: 0,
   fileSizeBytes: 80_000,
 };
@@ -182,7 +173,6 @@ function bridge() {
   const cancelExportPreflight = jest.fn(async () => undefined);
   const exportAudio = jest.fn(async (_request: ExportAudioRequest) => exportResult);
   const cancelExport = jest.fn(async () => undefined);
-  const shareExport = jest.fn(async () => undefined);
   const addEventListener = ((
     name: NativeEventName,
     listener: (event: ProgressEvent | NativeErrorEvent) => void,
@@ -196,7 +186,6 @@ function bridge() {
     cancelExportPreflight,
     exportAudio,
     cancelExport,
-    shareExport,
     addEventListener,
   };
   return {
@@ -434,6 +423,55 @@ describe('ExportCoordinator', () => {
       expect.objectContaining({
         clipId: '11111111-1111-4111-8111-111111111116',
         timelineStartMs: 4_000,
+      }),
+    ]);
+  });
+
+  it('sends crossfades as overlapping alternating tracks so M4A cannot use stream copy', async () => {
+    const native = bridge();
+    const timelineProject = project();
+    timelineProject.clips = [
+      timelineProject.clips[0]!,
+      {
+        ...timelineProject.clips[0]!,
+        id: '11111111-1111-4111-8111-111111111116',
+        startMs: 2_000,
+        endMs: 7_000,
+      },
+    ];
+    timelineProject.crossfades = [
+      {
+        id: '11111111-1111-4111-8111-111111111117',
+        leftClipId: CLIP_ID,
+        rightClipId: '11111111-1111-4111-8111-111111111116',
+        durationMs: 2_000,
+      },
+    ];
+    const coordinator = new ExportCoordinator({
+      media: native.media,
+      sourceResolver: { resolveSourceAudioUri: () => 'file:///private/source.m4a' },
+      preview: { releaseProject: async () => undefined },
+      appState: new FakeAppState(),
+      idFactory: () => 'crossfade-preflight',
+    });
+
+    await coordinator.prepare(timelineProject);
+
+    expect(useExportStore.getState().compositionDurationMs).toBe(9_000);
+    expect(native.preflightExport.mock.calls[0]?.[0].clips).toEqual([
+      expect.objectContaining({
+        clipId: CLIP_ID,
+        endMs: 6_000,
+        trackId: 'track-1',
+        timelineStartMs: 0,
+        fadeOutMs: 2_000,
+      }),
+      expect.objectContaining({
+        clipId: '11111111-1111-4111-8111-111111111116',
+        startMs: 1_000,
+        trackId: 'track-2',
+        timelineStartMs: 3_000,
+        fadeInMs: 2_000,
       }),
     ]);
   });

@@ -15,7 +15,6 @@ class ExportCodecCapabilityProbeTest {
     )
 
     assertTrue(result.aacAvailable)
-    assertFalse(result.flacAvailable)
     assertFalse(result.mp3Available)
     assertFalse(result.resamplerAvailable)
   }
@@ -27,7 +26,6 @@ class ExportCodecCapabilityProbeTest {
       buildInfo = {
         NativeCodecBuildInfo(
           bridgeLoaded = true,
-          flac = available,
           lame = available,
           libsamplerate = available
         )
@@ -36,7 +34,6 @@ class ExportCodecCapabilityProbeTest {
     )
 
     assertFalse(result.aacAvailable)
-    assertTrue(result.flacAvailable)
     assertTrue(result.mp3Available)
     assertTrue(result.resamplerAvailable)
   }

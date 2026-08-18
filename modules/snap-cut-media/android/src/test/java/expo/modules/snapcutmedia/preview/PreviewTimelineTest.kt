@@ -22,6 +22,23 @@ class PreviewTimelineTest {
   }
 
   @Test
+  fun `selection joins two comparison ranges without a gap`() {
+    val timeline = PreviewTimeline.create(
+      PreviewMode.SELECTION,
+      listOf(
+        clip("before", 2_000, 7_000, TrackId.TRACK_2, 90_000),
+        clip("after", 12_000, 17_000, TrackId.TRACK_2, 120_000)
+      )
+    )
+
+    assertEquals(10_000L, timeline.durationMs)
+    assertEquals(listOf(0L, 5_000L), timeline.clips.map { it.timelineStartMs })
+    assertEquals(listOf(TrackId.TRACK_1, TrackId.TRACK_1), timeline.clips.map { it.trackId })
+    assertEquals("after", timeline.positionAt(5_000L).clipId)
+    assertEquals(2, timeline.tracks.single().items.size)
+  }
+
+  @Test
   fun `composition includes gaps and overlapping second track`() {
     val timeline = PreviewTimeline.create(
       PreviewMode.COMPOSITION,
@@ -41,22 +58,22 @@ class PreviewTimelineTest {
   }
 
   @Test
-  fun `accepts stepped fades through six seconds`() {
+  fun `accepts stepped fades through eight seconds`() {
     val timeline = PreviewTimeline.create(
       PreviewMode.COMPOSITION,
       listOf(
         clip(
           "maximum-fades",
           0,
-          12_000,
-          fadeInMs = 6_000,
-          fadeOutMs = 6_000
+          16_000,
+          fadeInMs = 8_000,
+          fadeOutMs = 8_000
         )
       )
     )
 
-    assertEquals(6_000L, timeline.clips.single().fadeInMs)
-    assertEquals(6_000L, timeline.clips.single().fadeOutMs)
+    assertEquals(8_000L, timeline.clips.single().fadeInMs)
+    assertEquals(8_000L, timeline.clips.single().fadeOutMs)
   }
 
   @Test
@@ -72,7 +89,7 @@ class PreviewTimelineTest {
       assertThrows(SnapCutMediaException::class.java) {
         PreviewTimeline.create(
           PreviewMode.SELECTION,
-          listOf(clip("one", 0, 100), clip("two", 0, 100))
+          listOf(clip("one", 0, 100), clip("two", 0, 100), clip("three", 0, 100))
         )
       }.code
     )
@@ -102,7 +119,7 @@ class PreviewTimelineTest {
       assertThrows(SnapCutMediaException::class.java) {
         PreviewTimeline.create(
           PreviewMode.SELECTION,
-          listOf(clip("over-limit-fade", 0, 12_000, fadeInMs = 6_500))
+          listOf(clip("over-limit-fade", 0, 16_000, fadeInMs = 8_500))
         )
       }.code
     )

@@ -10,15 +10,15 @@ import {
 import Svg, { Line, Path, Rect } from 'react-native-svg';
 
 import { colors, layout, radii, spacing, typography } from '@/constants';
-import type { SnapCutClip, SnapCutSource, WaveformFileV1 } from '@/domain';
+import type { SnapCutClip, SnapCutSource, WaveformFile } from '@/domain';
 import { buildWaveformFillPath } from '@/utils/waveform';
 
-export const COMPOSITION_WAVEFORM_HEIGHT = 132;
+const COMPOSITION_WAVEFORM_HEIGHT = 132;
 
 const clamp = (value: number, minimum: number, maximum: number): number =>
   Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
 
-export interface CompositionWaveformSegment {
+interface CompositionWaveformSegment {
   clipId: string;
   x: number;
   width: number;
@@ -33,7 +33,7 @@ export function compositionDurationFromClips(clips: readonly SnapCutClip[]): num
 export function buildCompositionWaveformSegments(
   clips: readonly SnapCutClip[],
   sources: readonly SnapCutSource[],
-  waveformsBySourceId: Readonly<Record<string, WaveformFileV1 | null>>,
+  waveformsBySourceId: Readonly<Record<string, WaveformFile | null>>,
   width: number,
   height: number,
 ): CompositionWaveformSegment[] {
@@ -85,7 +85,7 @@ export function buildCompositionWaveformSegments(
 interface CompositionWaveformProps {
   clips: readonly SnapCutClip[];
   sources: readonly SnapCutSource[];
-  waveformsBySourceId: Readonly<Record<string, WaveformFileV1 | null>>;
+  waveformsBySourceId: Readonly<Record<string, WaveformFile | null>>;
   cursorMs: number;
   disabled?: boolean;
   onScrubStart: () => void;

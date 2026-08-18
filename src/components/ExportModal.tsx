@@ -36,7 +36,6 @@ interface ExportModalProps {
 
 const formatLabels: Record<SnapCutExportFormat, string> = {
   m4a: copy.export.m4a,
-  flac: copy.export.flac,
   mp3: copy.export.mp3,
 };
 
@@ -119,46 +118,44 @@ export function ExportModal({ visible, onClose, onExport, onCancel, onRetry }: E
                     {copy.export.mixClippingWarning}
                   </Text>
                 ) : null}
-                {preflight.formats
-                  .filter(({ format }) => format !== 'flac')
-                  .map((format) => {
-                    const selected = selectedFormat === format.format;
-                    const label = formatLabel(format.format, format.mode);
-                    return (
-                      <Pressable
-                        accessibilityLabel={label}
-                        accessibilityRole="radio"
-                        accessibilityState={{ checked: selected, disabled: !format.available }}
-                        disabled={!format.available || busy}
-                        key={format.format}
-                        onPress={() => selectFormat(format.format)}
-                        style={({ pressed }) => [
-                          styles.formatCard,
-                          selected && styles.formatCardSelected,
-                          pressed && styles.formatCardPressed,
-                          !format.available && styles.formatCardDisabled,
-                        ]}
-                      >
-                        <View style={styles.formatHeader}>
-                          <Text
-                            style={[styles.formatTitle, !format.available && styles.disabledText]}
-                          >
-                            {label}
-                          </Text>
-                          <View style={[styles.radio, selected && styles.radioSelected]} />
-                        </View>
-                        {format.available ? (
-                          <Text style={styles.formatDetail}>
-                            {copy.export.estimatedSize(formatBytes(format.estimatedOutputBytes))}
-                          </Text>
-                        ) : (
-                          <Text style={styles.unavailableReason}>
-                            {format.reasons[0] ?? copy.export.unavailableReason}
-                          </Text>
-                        )}
-                      </Pressable>
-                    );
-                  })}
+                {preflight.formats.map((format) => {
+                  const selected = selectedFormat === format.format;
+                  const label = formatLabel(format.format, format.mode);
+                  return (
+                    <Pressable
+                      accessibilityLabel={label}
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: selected, disabled: !format.available }}
+                      disabled={!format.available || busy}
+                      key={format.format}
+                      onPress={() => selectFormat(format.format)}
+                      style={({ pressed }) => [
+                        styles.formatCard,
+                        selected && styles.formatCardSelected,
+                        pressed && styles.formatCardPressed,
+                        !format.available && styles.formatCardDisabled,
+                      ]}
+                    >
+                      <View style={styles.formatHeader}>
+                        <Text
+                          style={[styles.formatTitle, !format.available && styles.disabledText]}
+                        >
+                          {label}
+                        </Text>
+                        <View style={[styles.radio, selected && styles.radioSelected]} />
+                      </View>
+                      {format.available ? (
+                        <Text style={styles.formatDetail}>
+                          {copy.export.estimatedSize(formatBytes(format.estimatedOutputBytes))}
+                        </Text>
+                      ) : (
+                        <Text style={styles.unavailableReason}>
+                          {format.reasons[0] ?? copy.export.unavailableReason}
+                        </Text>
+                      )}
+                    </Pressable>
+                  );
+                })}
               </>
             ) : null}
 

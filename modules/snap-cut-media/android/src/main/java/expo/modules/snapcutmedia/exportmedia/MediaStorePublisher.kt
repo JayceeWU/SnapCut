@@ -344,7 +344,6 @@ internal object ExportNaming {
 
   fun specification(format: ExportFormat): Specification = when (format) {
     ExportFormat.M4A -> Specification(".m4a", "audio/mp4")
-    ExportFormat.FLAC -> Specification(".flac", "audio/flac")
     ExportFormat.MP3 -> Specification(".mp3", "audio/mpeg")
   }
 

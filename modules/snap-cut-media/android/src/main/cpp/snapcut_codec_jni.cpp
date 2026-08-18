@@ -1,7 +1,5 @@
 #include <jni.h>
 
-#include <FLAC/format.h>
-#include <FLAC/stream_encoder.h>
 #include <lame.h>
 #include <samplerate.h>
 
@@ -20,7 +18,6 @@ constexpr jint kCloseResultClosed = 0;
 constexpr jint kCloseResultAlreadyClosedOrUnknown = 1;
 
 struct CodecSmokeHandle final {
-  FLAC__StreamEncoder* flac = nullptr;
   lame_t lame = nullptr;
   SRC_STATE* sample_rate = nullptr;
 
@@ -35,17 +32,9 @@ struct CodecSmokeHandle final {
     if (lame != nullptr) {
       lame_close(lame);
     }
-    if (flac != nullptr) {
-      FLAC__stream_encoder_delete(flac);
-    }
   }
 
   bool Initialize() {
-    flac = FLAC__stream_encoder_new();
-    if (flac == nullptr) {
-      return false;
-    }
-
     lame = lame_init();
     if (lame == nullptr) {
       return false;
@@ -63,10 +52,6 @@ std::unordered_map<jlong, std::unique_ptr<CodecSmokeHandle>> g_handles;
 
 jstring NewUtfString(JNIEnv* env, const char* value) {
   return env->NewStringUTF(value == nullptr ? "" : value);
-}
-
-jstring NativeFlacVersion(JNIEnv* env, jobject /* receiver */) {
-  return NewUtfString(env, FLAC__VERSION_STRING);
 }
 
 jstring NativeLameVersion(JNIEnv* env, jobject /* receiver */) {
@@ -138,9 +123,6 @@ jint NativeCloseSmokeHandle(
 }
 
 JNINativeMethod kBridgeMethods[] = {
-    {const_cast<char*>("nativeFlacVersion"),
-     const_cast<char*>("()Ljava/lang/String;"),
-     reinterpret_cast<void*>(NativeFlacVersion)},
     {const_cast<char*>("nativeLameVersion"),
      const_cast<char*>("()Ljava/lang/String;"),
      reinterpret_cast<void*>(NativeLameVersion)},

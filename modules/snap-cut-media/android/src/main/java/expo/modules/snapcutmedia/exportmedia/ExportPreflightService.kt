@@ -105,7 +105,7 @@ internal class ExportPreflightService(
       } catch (_: LinkageError) {
         // M4A stream-copy inspection is an optional optimization. Some Android
         // 29 vendor runtimes expose incomplete MediaExtractor/MediaFormat APIs
-        // and throw a linkage error here. Keep decoded M4A/FLAC/MP3 export
+        // and throw a linkage error here. Keep decoded M4A/MP3 export
         // available instead of failing the entire preflight.
         cancellation.throwIfCancelled()
         m4aReasons += M4A_SCAN_REASON
@@ -131,18 +131,11 @@ internal class ExportPreflightService(
     val requestedDurationMs = clips.maxOf(ResolvedExportClip::timelineEndMs)
     val outputRate = ExportMath.outputSampleRate(inspections.values.map { it.sampleRateHz })
     val outputChannels = ExportMath.outputChannelCount(inspections.values.map { it.channelCount })
-    val flacEstimate = ExportMath.estimateFlacBytes(requestedDurationMs, outputRate, outputChannels)
     val mp3Estimate = ExportMath.estimateMp3Bytes(requestedDurationMs)
     val aacEstimate = ExportMath.estimateAacBytes(requestedDurationMs, outputChannels)
     nativeStageSink(ExportPreflightNativeStage.CAPABILITIES)
     val capabilities = codecCapabilities(outputRate, outputChannels)
     val needsResampling = inspections.values.any { it.sampleRateHz != outputRate }
-    val flacReasons = buildList {
-      if (!capabilities.flacAvailable) add("The FLAC encoder is unavailable in this build.")
-      if (needsResampling && !capabilities.resamplerAvailable) {
-        add("Sample-rate conversion is unavailable in this build.")
-      }
-    }
     val mp3Reasons = buildList {
       if (!capabilities.mp3Available) add("The MP3 encoder is unavailable in this build.")
       if (needsResampling && !capabilities.resamplerAvailable) {
@@ -182,16 +175,6 @@ internal class ExportPreflightService(
         m4aChannels
       ),
       ExportFormatAvailabilityData(
-        ExportFormat.FLAC,
-        if (flacReasons.isEmpty()) "flac-lossless-encode" else null,
-        flacReasons.isEmpty(),
-        flacReasons,
-        flacEstimate,
-        ExportMath.requiredFreeBytes(flacEstimate),
-        outputRate,
-        outputChannels
-      ),
-      ExportFormatAvailabilityData(
         ExportFormat.MP3,
         if (mp3Reasons.isEmpty()) "mp3-lossy-encode" else null,
         mp3Reasons.isEmpty(),
@@ -203,7 +186,7 @@ internal class ExportPreflightService(
       )
     )
     val result = ExportPreflightData(
-      preferredFormat = if (m4aAvailable) ExportFormat.M4A else ExportFormat.FLAC,
+      preferredFormat = if (m4aAvailable) ExportFormat.M4A else ExportFormat.MP3,
       m4aPlan = m4aPlan,
       formats = formats,
       mayClip = TimelineAudio.mayHardClip(request.clips)
@@ -220,13 +203,11 @@ internal class ExportPreflightService(
   companion object {
     fun conservativeCodecCapabilities(
       bridgeLoaded: Boolean,
-      flacAvailable: Boolean,
       mp3Available: Boolean,
       resamplerAvailable: Boolean,
       aacAvailable: Boolean = true
     ): ExportCodecCapabilities = ExportCodecCapabilities(
       aacAvailable = aacAvailable,
-      flacAvailable = bridgeLoaded && flacAvailable,
       mp3Available = bridgeLoaded && mp3Available,
       resamplerAvailable = bridgeLoaded && resamplerAvailable
     )

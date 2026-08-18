@@ -131,7 +131,6 @@ internal class M4aExportService(
         sampleRateHz = sampleRate,
         channelCount = channelCount,
         bitrateKbps = null,
-        bitsPerSample = null,
         maxBoundaryAdjustmentMs = plan.maxBoundaryAdjustmentMs,
         fileSizeBytes = published.fileSizeBytes
       )

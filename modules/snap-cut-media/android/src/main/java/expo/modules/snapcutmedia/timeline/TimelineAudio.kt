@@ -10,7 +10,7 @@ import kotlin.math.sin
 
 internal object TimelineAudio {
   const val FADE_DURATION_STEP_MS = 500L
-  const val MAX_FADE_DURATION_MS = 6_000L
+  const val MAX_FADE_DURATION_MS = 8_000L
 
   fun isSupportedFadeDurationMs(value: Long): Boolean =
     value in 0L..MAX_FADE_DURATION_MS && value % FADE_DURATION_STEP_MS == 0L

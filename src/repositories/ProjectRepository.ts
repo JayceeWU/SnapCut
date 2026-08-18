@@ -8,7 +8,6 @@ import {
   renameProject,
   renameSource as renameProjectSource,
 } from '@/domain/projects';
-import { parseSnapCutProject } from '@/domain/migrations';
 import { diagnosticLog } from '@/diagnostics';
 import {
   projectIndexSchema,
@@ -16,7 +15,7 @@ import {
   sourceFileSchema,
   waveformFileSchema,
 } from '@/domain/schemas';
-import type { SnapCutProject, WaveformFileV1, WaveformStatus } from '@/domain/types';
+import type { SnapCutProject, SourceFile, WaveformFile, WaveformStatus } from '@/domain/types';
 import { immutableSourceMetadata } from '@/domain/sourceRelations';
 import { nativePrivateMediaVerifier } from '@/services/NativePrivateMediaVerifier';
 import {
@@ -83,7 +82,7 @@ export interface ProjectRepositoryOptions {
 }
 
 function cloneProject(project: SnapCutProject): SnapCutProject {
-  return snapCutProjectSchema.parse(project) as SnapCutProject;
+  return JSON.parse(JSON.stringify(project)) as SnapCutProject;
 }
 
 function sortProjects(projects: readonly SnapCutProject[]): SnapCutProject[] {
@@ -188,7 +187,7 @@ export class ProjectRepository {
     return this.layout.sourceWaveformUri(projectId, sourceId);
   }
 
-  async loadWaveform(projectId: string, sourceId: string): Promise<WaveformFileV1 | null> {
+  async loadWaveform(projectId: string, sourceId: string): Promise<WaveformFile | null> {
     this.assertInitialized();
     const source = this.requireSource(projectId, sourceId);
     if (source.waveformStatus !== 'ready') return null;
@@ -237,7 +236,7 @@ export class ProjectRepository {
         ...current,
         sources,
         updatedAt: this.now(),
-      }) as SnapCutProject;
+      });
       await this.writeProject(updated);
       const status = await this.recovery.inspectProject(updated);
       this.replaceInMemory(updated, status);
@@ -277,7 +276,7 @@ export class ProjectRepository {
 
   save(projectInput: SnapCutProject): Promise<SnapCutProject> {
     this.assertInitialized();
-    const project = parseSnapCutProject(projectInput);
+    const project = projectInput;
     return this.writeQueue.run(project.id, async () => {
       this.requireProject(project.id);
       const current = this.requireProject(project.id);
@@ -291,7 +290,7 @@ export class ProjectRepository {
         ...project,
         createdAt: current.createdAt,
         updatedAt: this.now(),
-      }) as SnapCutProject;
+      });
       await this.writeProject(withTimestamp);
       const status = await this.recovery.inspectProject(withTimestamp);
       this.replaceInMemory(withTimestamp, status);
@@ -372,13 +371,13 @@ export class ProjectRepository {
         );
       }
 
-      const journal: SourceDeletionJournal = sourceDeletionJournalSchema.parse({
+      const journal: SourceDeletionJournal = {
         schemaVersion: 1,
         jobId,
         projectId,
         sourceId,
         projectUpdatedAt: updated.updatedAt,
-      });
+      };
       await this.json.write(journalUri, journal, (raw) => sourceDeletionJournalSchema.parse(raw));
 
       let movedToDeletionDirectory = false;
@@ -554,11 +553,11 @@ export class ProjectRepository {
       const completedAudioUri = partialUri.slice(0, -'.partial'.length);
       await this.layout.fileSystem.moveFile(partialUri, completedAudioUri);
 
-      const sourceFile = sourceFileSchema.parse({
+      const sourceFile: SourceFile = {
         schemaVersion: 2,
         projectId: current.id,
         source: immutableSourceMetadata(source),
-      });
+      };
       await this.json.write(
         this.layout.transactionSourceMetadataUri(input.jobId, source.id),
         sourceFile,
@@ -581,7 +580,7 @@ export class ProjectRepository {
 
       const updatedAt = this.now();
       const updated = addSource(current, source, updatedAt);
-      const journal: ImportTransactionJournal = importTransactionJournalSchema.parse({
+      const journal: ImportTransactionJournal = {
         schemaVersion: 1,
         jobId: input.jobId,
         projectId: input.projectId,
@@ -591,7 +590,7 @@ export class ProjectRepository {
         expectedSha256: input.privateAudioSha256,
         projectUpdatedAt: updated.updatedAt,
         nativeInspectionComplete: true,
-      });
+      };
 
       const journalUri = this.layout.projectTransactionJournalUri(input.projectId, input.jobId);
       const finalSourceDirectory = this.layout.sourceDirectoryUri(input.projectId, source.id);
@@ -689,7 +688,7 @@ export class ProjectRepository {
 
   private async writeProject(project: SnapCutProject): Promise<void> {
     await this.json.write(this.layout.projectMetadataUri(project.id), project, (raw) =>
-      parseSnapCutProject(raw),
+      snapCutProjectSchema.parse(raw),
     );
   }
 
@@ -730,7 +729,7 @@ export class ProjectRepository {
 
   private async readOfficialProject(projectId: string): Promise<SnapCutProject | null> {
     return this.json.read(this.layout.projectMetadataUri(projectId), (raw) =>
-      parseSnapCutProject(raw),
+      snapCutProjectSchema.parse(raw),
     );
   }
 

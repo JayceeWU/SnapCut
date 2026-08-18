@@ -1,6 +1,5 @@
 ext.snapCutVersions = [
   media3: '1.10.1',
-  flac: '1.5.0',
   lame: '4.0',
   libsamplerate: '0.2.2',
   cmake: '3.22.1',

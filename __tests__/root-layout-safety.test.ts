@@ -20,4 +20,12 @@ describe('root media recovery startup', () => {
     expect(command).toContain('await previewCoordinator.releaseProject(project.id)');
     expect(command).toMatch(/}\s*catch\s*{/);
   });
+
+  it('keeps the editor Add Clip entry while removing the Sources Add Clip bridge', () => {
+    const editor = fs.readFileSync(path.resolve(__dirname, '../app/project/[id].tsx'), 'utf8');
+
+    expect(editor).toContain('testID="add-clip"');
+    expect(editor).toContain('testID="add-crossfade"');
+    expect(editor).not.toContain('onAddClip=');
+  });
 });

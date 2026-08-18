@@ -1,6 +1,6 @@
 import type { StorageFileSystem } from './StorageFileSystem';
 
-export type JsonParser<T> = (input: unknown) => T;
+type JsonParser<T> = (input: unknown) => T;
 
 export interface AtomicJsonWriteOptions {
   /** Cache files may replace invalid committed JSON after preserving it. */

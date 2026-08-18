@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 
 import { colors, layout, radii, spacing, typography } from '@/constants';
+import { MAX_SOURCE_NAME_CODE_POINTS } from '@/domain';
 
 import { AppButton } from './AppButton';
 import { ErrorBanner } from './ErrorBanner';
@@ -45,8 +46,8 @@ function VisibleSourceNameModal({
       setValidationMessage('Enter a source name.');
       return;
     }
-    if ([...normalized].length > 255) {
-      setValidationMessage('Use 255 characters or fewer.');
+    if ([...normalized].length > MAX_SOURCE_NAME_CODE_POINTS) {
+      setValidationMessage(`Use ${MAX_SOURCE_NAME_CODE_POINTS} characters or fewer.`);
       return;
     }
     onSubmit(normalized);
@@ -88,7 +89,7 @@ function VisibleSourceNameModal({
             autoFocus
             editable={!busy}
             onChangeText={(value) => {
-              setName(value);
+              setName([...value].slice(0, MAX_SOURCE_NAME_CODE_POINTS).join(''));
               setValidationMessage(null);
             }}
             onSubmitEditing={submit}

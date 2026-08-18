@@ -8,7 +8,7 @@ import { unicodeCodePointLength } from '../utils/unicode';
 
 const PATH_OR_CONTROL_CHARACTER = /[\u0000-\u001f\u007f/\\:*?"<>|]/u;
 const PATH_OR_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f/\\:*?"<>|]/gu;
-const MANAGED_EXPORT_EXTENSION = /\.(?:m4a|flac|mp3)$/iu;
+const MANAGED_EXPORT_EXTENSION = /\.(?:m4a|mp3)$/iu;
 
 export function isValidProjectName(value: string): boolean {
   return (

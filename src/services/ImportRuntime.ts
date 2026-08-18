@@ -18,7 +18,7 @@ interface ProjectMediaDeletionRuntime {
  * Call from application bootstrap after the native module is available. Tests
  * should construct the coordinator directly with fakes.
  */
-export function createImportRuntime(
+function createImportRuntime(
   media: ImportMediaPort & NativeWaveformPort = SnapCutMedia,
   repository: ProjectRepository = projectRepository,
 ): ImportRuntime {
@@ -86,7 +86,7 @@ export async function prepareProjectMediaDeletion(
   await runtime.waveformScheduler.cancelAll();
 }
 
-export async function pauseImportRuntime(): Promise<void> {
+async function pauseImportRuntime(): Promise<void> {
   if (!activeImportRuntime) return;
   await Promise.all([
     activeImportRuntime.coordinator.pauseForBackground(),

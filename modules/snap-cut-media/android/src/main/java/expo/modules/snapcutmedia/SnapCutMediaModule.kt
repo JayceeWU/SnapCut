@@ -28,7 +28,6 @@ import expo.modules.snapcutmedia.models.NativeOperation
 import expo.modules.snapcutmedia.models.PickedSource
 import expo.modules.snapcutmedia.models.PreviewCommandRequest
 import expo.modules.snapcutmedia.models.SeekPreviewRequest
-import expo.modules.snapcutmedia.models.ShareExportRequest
 import expo.modules.snapcutmedia.models.toBridgeMap
 import expo.modules.snapcutmedia.models.VerifyPrivateMediaRequest
 import expo.modules.snapcutmedia.preview.PreviewController
@@ -93,10 +92,6 @@ class SnapCutMediaModule : Module() {
       mapOf(
         "moduleVersion" to MODULE_VERSION,
         "media3" to libraryStatus(BuildConfig.SNAPCUT_MEDIA3_VERSION, media3Available),
-        "flac" to libraryStatus(
-          codecBuildInfo.flac.version,
-          codecBuildInfo.flac.available
-        ),
         "lame" to libraryStatus(
           codecBuildInfo.lame.version,
           codecBuildInfo.lame.available
@@ -384,11 +379,6 @@ class SnapCutMediaModule : Module() {
       if (shouldCancelWorker) {
         jobs.cancelAndJoin(NativeOperation.EXPORT, jobId)
       }
-    }
-
-    AsyncFunction("shareExport") Coroutine { request: ShareExportRequest ->
-      if (destroyed.get()) throw mediaError(SnapCutMediaError.NATIVE_FEATURE_UNAVAILABLE)
-      withContext(Dispatchers.IO) { exports().share(request) }
     }
 
     OnActivityResult { _, (requestCode, resultCode, data) ->

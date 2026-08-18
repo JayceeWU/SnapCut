@@ -10,14 +10,13 @@ import expo.modules.snapcutmedia.export.AacCompositionEncoder
 import expo.modules.snapcutmedia.models.ExportAudioRequest
 import expo.modules.snapcutmedia.models.ExportFormat
 import expo.modules.snapcutmedia.models.ExportPreflightRequest
-import expo.modules.snapcutmedia.models.ShareExportRequest
 import expo.modules.snapcutmedia.source.CancellationCheck
 import expo.modules.snapcutmedia.source.MediaResourceHooks
 import expo.modules.snapcutmedia.source.SourceInspector
 import java.io.Closeable
 import java.io.File
 
-/** Native export facade shared by M4A stream-copy and decoded FLAC/MP3 pipelines. */
+/** Native export facade shared by M4A stream-copy and decoded M4A/MP3 pipelines. */
 internal class SnapCutExportServices(
   context: Context,
   sourceInspector: SourceInspector
@@ -45,7 +44,6 @@ internal class SnapCutExportServices(
     planRegistry,
     publisher
   )
-  private val share = ExportShareService(context)
 
   fun preflight(
     request: ExportPreflightRequest,
@@ -76,7 +74,7 @@ internal class SnapCutExportServices(
         progressSink,
         exportCommitGate.boundary(request.jobId, request.generation)
       ).toBridgeMap()
-      request.format in setOf(ExportFormat.M4A, ExportFormat.FLAC, ExportFormat.MP3) -> exportDecoded(
+      request.format in setOf(ExportFormat.M4A, ExportFormat.MP3) -> exportDecoded(
         request,
         cancellation,
         hooks,
@@ -94,8 +92,6 @@ internal class SnapCutExportServices(
     exportCommitGate.complete(jobId, generation)
   }
 
-  fun share(request: ShareExportRequest) = share.share(request)
-
   override fun close() {
     exportCommitGate.clear()
     planRegistry.clear()
@@ -110,7 +106,6 @@ internal class SnapCutExportServices(
       val aac = runCatching(aacAvailable).getOrDefault(false)
       return ExportPreflightService.conservativeCodecCapabilities(
         bridgeLoaded = info?.bridgeLoaded == true,
-        flacAvailable = info?.flac?.available == true,
         mp3Available = info?.lame?.available == true,
         resamplerAvailable = info?.libsamplerate?.available == true,
         aacAvailable = aac
@@ -130,11 +125,6 @@ internal class SnapCutExportServices(
     val resolvedClips = ExportFileAccess.resolveClips(request.clips, projectRoots)
     val requestedDurationMs = resolvedClips.maxOf(ResolvedExportClip::timelineEndMs)
     val estimate = when (request.format) {
-      ExportFormat.FLAC -> ExportMath.estimateFlacBytes(
-        requestedDurationMs,
-        request.outputSampleRateHz ?: throw mediaError(SnapCutMediaError.EXPORT_PREFLIGHT_FAILED),
-        request.outputChannelCount ?: throw mediaError(SnapCutMediaError.EXPORT_PREFLIGHT_FAILED)
-      )
       ExportFormat.MP3 -> ExportMath.estimateMp3Bytes(requestedDurationMs)
       ExportFormat.M4A -> ExportMath.estimateAacBytes(requestedDurationMs, request.outputChannelCount
         ?: throw mediaError(SnapCutMediaError.EXPORT_PREFLIGHT_FAILED))
@@ -161,7 +151,6 @@ internal class SnapCutExportServices(
         reporter.report(bridged.stage, bridged.fraction)
       }
       val verificationError = when (request.format) {
-        ExportFormat.FLAC -> SnapCutMediaError.FLAC_VERIFICATION_FAILED
         ExportFormat.MP3 -> SnapCutMediaError.MP3_VERIFICATION_FAILED
         ExportFormat.M4A -> SnapCutMediaError.AAC_VERIFICATION_FAILED
       }
@@ -175,13 +164,9 @@ internal class SnapCutExportServices(
         staged.actualDurationMs <= 0L ||
         staged.sampleRateHz != request.outputSampleRateHz ||
         staged.channelCount != request.outputChannelCount ||
-        (request.format == ExportFormat.FLAC &&
-          (staged.bitrateKbps != null || staged.bitsPerSample != 24)) ||
-        (request.format == ExportFormat.MP3 &&
-          (staged.bitrateKbps != 320 || staged.bitsPerSample != null)) ||
+        (request.format == ExportFormat.MP3 && staged.bitrateKbps != 320) ||
         (request.format == ExportFormat.M4A &&
-          (staged.bitrateKbps != (if (staged.channelCount == 1) 160 else 320) ||
-            staged.bitsPerSample != null))
+          staged.bitrateKbps != (if (staged.channelCount == 1) 160 else 320))
       ) {
         throw mediaError(verificationError)
       }
@@ -202,7 +187,6 @@ internal class SnapCutExportServices(
       return ExportAudioResultData(
         format = staged.format,
         mode = when (staged.format) {
-          ExportFormat.FLAC -> "flac-lossless-encode"
           ExportFormat.MP3 -> "mp3-lossy-encode"
           ExportFormat.M4A -> "aac-lossy-encode"
         },
@@ -213,7 +197,6 @@ internal class SnapCutExportServices(
         sampleRateHz = staged.sampleRateHz,
         channelCount = staged.channelCount,
         bitrateKbps = staged.bitrateKbps,
-        bitsPerSample = staged.bitsPerSample,
         maxBoundaryAdjustmentMs = 0L,
         fileSizeBytes = published.fileSizeBytes
       )

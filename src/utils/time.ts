@@ -81,6 +81,3 @@ export function formatTimelineTime(valueMs: number): string {
     ? `${hours}:${minutes.toString().padStart(2, '0')}:${suffix}`
     : `${totalMinutes}:${suffix}`;
 }
-
-export const formatTimestampMs = formatExactTime;
-export const parseTimestampMs = parseExactTime;

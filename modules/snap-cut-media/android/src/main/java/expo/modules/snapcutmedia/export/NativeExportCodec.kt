@@ -160,10 +160,6 @@ private class NativeCompositionEncoder(
 
   private companion object {
     fun errorSet(format: ExportFormat): EncoderErrors = when (format) {
-      ExportFormat.FLAC -> EncoderErrors(
-        SnapCutMediaError.FLAC_ENCODER_INIT_FAILED,
-        SnapCutMediaError.FLAC_ENCODER_FAILED
-      )
       ExportFormat.MP3 -> EncoderErrors(
         SnapCutMediaError.MP3_ENCODER_INIT_FAILED,
         SnapCutMediaError.MP3_ENCODER_FAILED
@@ -215,15 +211,6 @@ internal object NativeExportCodecBridge {
   fun createEncoder(config: CompositionEncoderConfig): Long {
     requireNativeLibrary()
     return when (config.format) {
-      ExportFormat.FLAC -> runCatching {
-        nativeCreateFlacEncoder(
-          config.outputFile.absolutePath,
-          config.sampleRateHz,
-          config.channelCount,
-          config.totalFrames,
-          config.title
-        )
-      }.getOrDefault(0L)
       ExportFormat.MP3 -> runCatching {
         nativeCreateMp3Encoder(
           config.outputFile.absolutePath,
@@ -276,14 +263,6 @@ internal object NativeExportCodecBridge {
 
   private external fun nativeResetResampler(handle: Long): Int
   private external fun nativeCloseResampler(handle: Long): Int
-
-  private external fun nativeCreateFlacEncoder(
-    path: String,
-    sampleRateHz: Int,
-    channelCount: Int,
-    totalFrames: Long,
-    title: String
-  ): Long
 
   private external fun nativeCreateMp3Encoder(
     path: String,

@@ -64,20 +64,20 @@ class TimelineAudioTest {
   }
 
   @Test
-  fun `fade contract accepts 500 millisecond steps through six seconds`() {
+  fun `fade contract accepts 500 millisecond steps through eight seconds`() {
     val maximum = clip(
       "maximum",
       TrackId.TRACK_1,
       0,
-      12_000,
-      fadeInMs = 6_000,
-      fadeOutMs = 6_000
+      16_000,
+      fadeInMs = 8_000,
+      fadeOutMs = 8_000
     )
     assertEquals(listOf(maximum), TimelineAudio.validate(listOf(maximum)))
     assertTrue(TimelineAudio.isSupportedFadeDurationMs(2_500))
-    assertTrue(TimelineAudio.isSupportedFadeDurationMs(6_000))
+    assertTrue(TimelineAudio.isSupportedFadeDurationMs(8_000))
 
-    listOf(250L, 6_500L).forEach { invalidFadeMs ->
+    listOf(250L, 8_500L).forEach { invalidFadeMs ->
       assertEquals(
         "INVALID_CLIP_RANGE",
         assertThrows(SnapCutMediaException::class.java) {

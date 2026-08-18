@@ -32,7 +32,7 @@ import { useExportStore } from '@/stores/exportStore';
 
 export type ExportMediaPort = Pick<
   SnapCutMediaApi,
-  'preflightExport' | 'cancelExportPreflight' | 'exportAudio' | 'cancelExport' | 'shareExport'
+  'preflightExport' | 'cancelExportPreflight' | 'exportAudio' | 'cancelExport'
 > &
   Pick<SnapCutMediaEventApi, 'addEventListener'>;
 
@@ -193,9 +193,6 @@ export class ExportCoordinator {
     if (!preflight || !selectedFormat || state.projectId !== project.id) {
       throw new Error('Export preflight is not ready.');
     }
-    if (selectedFormat === 'flac') {
-      throw new Error('FLAC export is not available.');
-    }
     const format = preflight.formats.find((candidate) => candidate.format === selectedFormat);
     if (!format?.available || format.sampleRateHz === null || format.channelCount === null) {
       throw new Error(format?.reasons[0] ?? 'The selected export format is unavailable.');
@@ -260,10 +257,6 @@ export class ExportCoordinator {
         useExportStore.getState().fail(copy.export.cancelled);
       }
     }
-  }
-
-  async share(result: ExportAudioResult): Promise<void> {
-    await this.media.shareExport({ contentUri: result.contentUri, format: result.format });
   }
 
   reset(): void {

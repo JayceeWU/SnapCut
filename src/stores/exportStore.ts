@@ -74,11 +74,10 @@ export const useExportStore = create<ExportStoreState>((set) => ({
     }),
 
   preflightReady: (preflight) => {
-    const visibleFormats = preflight.formats.filter(({ format }) => format !== 'flac');
-    const preferred = visibleFormats.find(
+    const preferred = preflight.formats.find(
       ({ available, format }) => available && format === preflight.preferredFormat,
     );
-    const fallback = visibleFormats.find(({ available }) => available);
+    const fallback = preflight.formats.find(({ available }) => available);
     set({
       status: 'ready',
       preflight,

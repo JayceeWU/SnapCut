@@ -16,7 +16,6 @@ function nativeModule(overrides: Partial<SnapCutMediaNativeModule> = {}): SnapCu
     getCodecBuildInfo: () => ({
       moduleVersion: '1.0.0',
       media3: { version: '1.10.1', available: true },
-      flac: { version: null, available: false },
       lame: { version: null, available: false },
       libsamplerate: { version: null, available: false },
       nativeCodecBridgeLoaded: false,
@@ -59,7 +58,6 @@ function nativeModule(overrides: Partial<SnapCutMediaNativeModule> = {}): SnapCu
       throw new Error('not called');
     },
     cancelExport: async () => undefined,
-    shareExport: async () => undefined,
     addListener: () => ({ remove: () => undefined }),
     ...overrides,
   };
@@ -73,7 +71,6 @@ describe('SnapCutMedia TypeScript boundary', () => {
     expect(client.getCodecBuildInfo()).toEqual({
       moduleVersion: '1.0.0',
       media3: { version: '1.10.1', available: true },
-      flac: { version: null, available: false },
       lame: { version: null, available: false },
       libsamplerate: { version: null, available: false },
       nativeCodecBridgeLoaded: false,
@@ -394,7 +391,6 @@ describe('SnapCutMedia TypeScript boundary', () => {
       sampleRateHz: 48_000,
       channelCount: 1 as const,
       bitrateKbps: 160 as const,
-      bitsPerSample: null,
       maxBoundaryAdjustmentMs: 0,
       fileSizeBytes: 50_000,
     }));

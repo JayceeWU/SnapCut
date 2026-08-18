@@ -62,7 +62,9 @@ const clipB: SnapCutClip = {
 
 function project(): SnapCutProject {
   return {
-    schemaVersion: 7,
+    schemaVersion: 9,
+    crossfades: [],
+    sourceComparisons: [],
     namePromptCompleted: true,
     id: PROJECT_ID,
     name: 'Preview',
@@ -125,7 +127,6 @@ function createMediaBridge() {
     getCodecBuildInfo: () => ({
       moduleVersion: '1.0.0',
       media3: { version: '1.10.1', available: true },
-      flac: { version: null, available: false },
       lame: { version: null, available: false },
       libsamplerate: { version: null, available: false },
       nativeCodecBridgeLoaded: false,
@@ -273,6 +274,201 @@ describe('PreviewCoordinator', () => {
       generation: 1,
       controlRevision: 2,
     });
+  });
+
+  it('loads the five-second ranges around two comparison points as one selection', async () => {
+    const bridge = createMediaBridge();
+    const preview = coordinator(bridge);
+    const previewProject = project();
+    const previewSource = previewProject.sources[0]!;
+
+    await preview.toggleComparison(previewProject, previewSource, 7_000, 12_000);
+
+    expect(bridge.loadSelectionPreview).toHaveBeenCalledTimes(1);
+    expect(bridge.loadSelectionPreview.mock.calls[0]?.[0].clips).toEqual([
+      expect.objectContaining({
+        sourceId: SOURCE_A_ID,
+        startMs: 2_000,
+        endMs: 7_000,
+        trackId: 'track-1',
+        timelineStartMs: 0,
+      }),
+      expect.objectContaining({
+        sourceId: SOURCE_A_ID,
+        startMs: 12_000,
+        endMs: 17_000,
+        trackId: 'track-1',
+        timelineStartMs: 5_000,
+      }),
+    ]);
+    expect(bridge.playPreview).toHaveBeenCalledTimes(1);
+
+    bridge.emitStatus(
+      status({
+        durationMs: 10_000,
+        playing: true,
+        sequence: 2,
+        controlRevision: 1,
+      }),
+    );
+    await preview.toggleComparison(previewProject, previewSource, 7_000, 12_000);
+    expect(bridge.loadSelectionPreview).toHaveBeenCalledTimes(1);
+    expect(bridge.pausePreview).toHaveBeenCalledWith({
+      playbackSessionId: 'session-1',
+      generation: 1,
+      controlRevision: 2,
+    });
+
+    bridge.emitStatus(
+      status({
+        durationMs: 10_000,
+        playing: false,
+        positionMs: 8_000,
+        sequence: 3,
+        controlRevision: 2,
+      }),
+    );
+    await preview.toggleComparison(previewProject, previewSource, 7_000, 12_000);
+    expect(bridge.seekPreview).toHaveBeenLastCalledWith({
+      playbackSessionId: 'session-1',
+      generation: 1,
+      controlRevision: 3,
+      positionMs: 0,
+      resumeAfterSeek: false,
+    });
+    expect(bridge.playPreview).toHaveBeenLastCalledWith({
+      playbackSessionId: 'session-1',
+      generation: 1,
+      controlRevision: 3,
+    });
+    expect(usePlaybackStore.getState().positionMs).toBe(0);
+  });
+
+  it('queues a zero seek when comparison playback restarts before loading finishes', async () => {
+    const bridge = createMediaBridge();
+    const loadGate = deferred<undefined>();
+    bridge.loadSelectionPreview.mockImplementationOnce(() => loadGate.promise);
+    const preview = coordinator(bridge);
+    const previewProject = project();
+    const previewSource = previewProject.sources[0]!;
+
+    const initialPlay = preview.toggleComparison(previewProject, previewSource, 7_000, 12_000);
+    await Promise.resolve();
+    await preview.toggleComparison(previewProject, previewSource, 7_000, 12_000);
+    await preview.toggleComparison(previewProject, previewSource, 7_000, 12_000);
+
+    loadGate.resolve(undefined);
+    await initialPlay;
+    expect(bridge.seekPreview).toHaveBeenLastCalledWith({
+      playbackSessionId: 'session-1',
+      generation: 1,
+      controlRevision: 3,
+      positionMs: 0,
+      resumeAfterSeek: false,
+    });
+    expect(bridge.playPreview).toHaveBeenLastCalledWith({
+      playbackSessionId: 'session-1',
+      generation: 1,
+      controlRevision: 3,
+    });
+  });
+
+  it('restarts a finished comparison from zero', async () => {
+    const bridge = createMediaBridge();
+    const preview = coordinator(bridge);
+    const previewProject = project();
+    const previewSource = previewProject.sources[0]!;
+
+    await preview.toggleComparison(previewProject, previewSource, 7_000, 12_000);
+    const comparisonClips = bridge.loadSelectionPreview.mock.calls[0]?.[0].clips;
+    bridge.emitStatus(
+      status({
+        durationMs: 10_000,
+        playing: false,
+        positionMs: 10_000,
+        didJustFinish: true,
+        sequence: 2,
+        controlRevision: 1,
+        currentClipIndex: 1,
+        currentClipId: comparisonClips?.[1]?.clipId ?? null,
+      }),
+    );
+    await preview.toggleComparison(previewProject, previewSource, 7_000, 12_000);
+
+    expect(bridge.seekPreview).toHaveBeenLastCalledWith({
+      playbackSessionId: 'session-1',
+      generation: 1,
+      controlRevision: 2,
+      positionMs: 0,
+      resumeAfterSeek: false,
+    });
+    expect(bridge.playPreview).toHaveBeenLastCalledWith({
+      playbackSessionId: 'session-1',
+      generation: 1,
+      controlRevision: 2,
+    });
+  });
+
+  it('releases the old comparison when either point changes', async () => {
+    const bridge = createMediaBridge();
+    const preview = coordinator(bridge);
+    const previewProject = project();
+    const previewSource = previewProject.sources[0]!;
+
+    await preview.toggleComparison(previewProject, previewSource, 7_000, 12_000);
+    await preview.toggleComparison(previewProject, previewSource, 7_100, 12_000);
+
+    expect(bridge.loadSelectionPreview).toHaveBeenCalledTimes(2);
+    expect(bridge.pausePreview).toHaveBeenCalledTimes(1);
+  });
+
+  it('plays the complete spliced result from its requested white-line position', async () => {
+    const bridge = createMediaBridge();
+    const preview = coordinator(bridge);
+    const previewProject = project();
+    const previewSource = previewProject.sources[0]!;
+
+    await preview.toggleComparisonResult(previewProject, previewSource, 7_000, 12_000, 4_000);
+
+    expect(bridge.loadSelectionPreview.mock.calls[0]?.[0].clips).toEqual([
+      expect.objectContaining({
+        sourceId: SOURCE_A_ID,
+        startMs: 0,
+        endMs: 7_000,
+        timelineStartMs: 0,
+      }),
+      expect.objectContaining({
+        sourceId: SOURCE_A_ID,
+        startMs: 12_000,
+        endMs: 20_000,
+        timelineStartMs: 7_000,
+      }),
+    ]);
+    expect(bridge.seekPreview).toHaveBeenCalledWith({
+      playbackSessionId: 'session-1',
+      generation: 1,
+      controlRevision: 1,
+      positionMs: 4_000,
+      resumeAfterSeek: false,
+    });
+    expect(bridge.playPreview).toHaveBeenCalledWith({
+      playbackSessionId: 'session-1',
+      generation: 1,
+      controlRevision: 1,
+    });
+  });
+
+  it('keeps transition and complete-result comparison sessions separate', async () => {
+    const bridge = createMediaBridge();
+    const preview = coordinator(bridge);
+    const previewProject = project();
+    const previewSource = previewProject.sources[0]!;
+
+    await preview.toggleComparison(previewProject, previewSource, 7_000, 12_000);
+    await preview.toggleComparisonResult(previewProject, previewSource, 7_000, 12_000, 4_000);
+
+    expect(bridge.loadSelectionPreview).toHaveBeenCalledTimes(2);
+    expect(bridge.pausePreview).toHaveBeenCalledTimes(1);
   });
 
   it('loads a composition and starts from the editor cursor', async () => {
@@ -673,6 +869,49 @@ describe('PreviewCoordinator', () => {
       loaded: true,
       currentClipIndex: 1,
       currentClipId: CLIP_B_ID,
+    });
+  });
+
+  it('derives an equal-power overlap without changing the ordered project duration', async () => {
+    const bridge = createMediaBridge();
+    const preview = coordinator(bridge);
+    const withCrossfade: SnapCutProject = {
+      ...project(),
+      crossfades: [
+        {
+          id: '11111111-1111-4111-8111-111111111116',
+          leftClipId: CLIP_A_ID,
+          rightClipId: CLIP_B_ID,
+          durationMs: 4_000,
+        },
+      ],
+    };
+
+    await preview.loadComposition(withCrossfade);
+
+    expect(bridge.loadCompositionPreview.mock.calls[0]?.[0]).toMatchObject({
+      clips: [
+        {
+          clipId: CLIP_A_ID,
+          startMs: 1_000,
+          endMs: 6_000,
+          trackId: 'track-1',
+          timelineStartMs: 0,
+          gain: 1,
+          fadeInMs: 0,
+          fadeOutMs: 4_000,
+        },
+        {
+          clipId: CLIP_B_ID,
+          startMs: 0,
+          endMs: 7_000,
+          trackId: 'track-2',
+          timelineStartMs: 1_000,
+          gain: 1,
+          fadeInMs: 4_000,
+          fadeOutMs: 0,
+        },
+      ],
     });
   });
 

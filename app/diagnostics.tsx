@@ -99,7 +99,6 @@ export default function DiagnosticsScreen() {
             value={String(native.health?.mediaPipelineAvailable ?? false)}
           />
           <DiagnosticRow label="Media3" value={libraryValue(native.codecs?.media3)} />
-          <DiagnosticRow label="libFLAC" value={libraryValue(native.codecs?.flac)} />
           <DiagnosticRow label="LAME" value={libraryValue(native.codecs?.lame)} />
           <DiagnosticRow label="libsamplerate" value={libraryValue(native.codecs?.libsamplerate)} />
         </View>

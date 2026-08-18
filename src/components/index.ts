@@ -1,6 +1,8 @@
 export * from './AppButton';
 export * from './ClipEditModal';
+export * from './ClipSourceWaveform';
 export * from './CompositionWaveform';
+export * from './CrossfadeModal';
 export * from './ConfirmDeleteModal';
 export * from './CorruptProjectCard';
 export * from './EmptyState';
@@ -13,3 +15,4 @@ export * from './ImportProgressModal';
 export * from './MediaLibraryModal';
 export * from './SequentialClipList';
 export * from './SourceNameModal';
+export * from './SourceComparisonModal';

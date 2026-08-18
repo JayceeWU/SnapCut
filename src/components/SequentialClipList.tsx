@@ -13,12 +13,13 @@ import {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 
 import { colors, layout, minimumTouchTarget, radii, spacing, typography } from '@/constants';
-import type { SnapCutClip, SnapCutSource } from '@/domain';
+import type { SnapCutClip, SnapCutCrossfade, SnapCutSource } from '@/domain';
 import { formatTimelineTime } from '@/utils/time';
 
-export const SEQUENTIAL_CLIP_ROW_HEIGHT = 72;
+const SEQUENTIAL_CLIP_ROW_HEIGHT = 72;
 const ROW_GAP = spacing.xs;
 const ROW_SLOT_HEIGHT = SEQUENTIAL_CLIP_ROW_HEIGHT + ROW_GAP;
+const CROSSFADE_ROW_HEIGHT = 48;
 
 interface SequentialClipRowProps {
   clip: SnapCutClip;
@@ -26,11 +27,15 @@ interface SequentialClipRowProps {
   index: number;
   clipCount: number;
   disabled: boolean;
+  crossfade?: SnapCutCrossfade | undefined;
   onEdit: (clip: SnapCutClip) => void;
   onMove: (destinationIndex: number) => void;
   onDragStart: () => void;
   onDragMove: (translationY: number, absoluteY: number) => void;
   onDragEnd: (translationY: number) => void;
+  onDeleteCrossfade: (crossfadeId: string) => void;
+  onEditCrossfade: (crossfade: SnapCutCrossfade) => void;
+  onMoveCrossfade: (crossfadeId: string, destinationBoundaryIndex: number) => void;
 }
 
 function SequentialClipRow({
@@ -39,11 +44,15 @@ function SequentialClipRow({
   index,
   clipCount,
   disabled,
+  crossfade,
   onEdit,
   onMove,
   onDragStart,
   onDragMove,
   onDragEnd,
+  onDeleteCrossfade,
+  onEditCrossfade,
+  onMoveCrossfade,
 }: SequentialClipRowProps) {
   const [dragOffset, setDragOffset] = useState(0);
   const dragGesture = useMemo(
@@ -66,6 +75,22 @@ function SequentialClipRow({
         }),
     [disabled, onDragEnd, onDragMove, onDragStart],
   );
+  const crossfadeGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(!disabled && crossfade !== undefined)
+        .activateAfterLongPress(220)
+        .runOnJS(true)
+        .onFinalize(({ translationY }) => {
+          if (!crossfade || clipCount < 2) return;
+          const destination = Math.min(
+            clipCount - 2,
+            Math.max(0, Math.round(index + translationY / ROW_SLOT_HEIGHT)),
+          );
+          if (destination !== index) onMoveCrossfade(crossfade.id, destination);
+        }),
+    [clipCount, crossfade, disabled, index, onMoveCrossfade],
+  );
 
   const onAccessibilityAction = (event: AccessibilityActionEvent) => {
     if (event.nativeEvent.actionName === 'moveEarlier' && index > 0) onMove(index - 1);
@@ -81,69 +106,110 @@ function SequentialClipRow({
       ]}
       testID={`clip-row-${clip.id}`}
     >
-      <GestureDetector gesture={dragGesture}>
-        <View
-          accessibilityActions={[
-            { name: 'moveEarlier', label: 'Move earlier' },
-            { name: 'moveLater', label: 'Move later' },
-          ]}
-          accessibilityHint="Long press and drag to reorder"
-          accessibilityLabel={`Reorder Clip ${index + 1}`}
-          accessibilityRole="adjustable"
-          accessibilityState={{ disabled }}
-          onAccessibilityAction={onAccessibilityAction}
-          style={styles.dragHandle}
-          testID={`clip-drag-handle-${clip.id}`}
+      <View style={styles.clipRow}>
+        <GestureDetector gesture={dragGesture}>
+          <View
+            accessibilityActions={[
+              { name: 'moveEarlier', label: 'Move earlier' },
+              { name: 'moveLater', label: 'Move later' },
+            ]}
+            accessibilityHint="Long press and drag to reorder"
+            accessibilityLabel={`Reorder Clip ${index + 1}`}
+            accessibilityRole="adjustable"
+            accessibilityState={{ disabled }}
+            onAccessibilityAction={onAccessibilityAction}
+            style={styles.dragHandle}
+            testID={`clip-drag-handle-${clip.id}`}
+          >
+            <Text accessibilityElementsHidden style={styles.dragGlyph}>
+              ≡
+            </Text>
+          </View>
+        </GestureDetector>
+        <Pressable
+          accessibilityLabel={`Edit Clip ${index + 1}, ${source?.displayName ?? 'Unknown source'}, start ${formatTimelineTime(clip.startMs)}, end ${formatTimelineTime(clip.endMs)}`}
+          accessibilityRole="button"
+          disabled={disabled}
+          onPress={() => onEdit(clip)}
+          style={({ pressed }) => [styles.rowBody, pressed && styles.pressed]}
         >
-          <Text accessibilityElementsHidden style={styles.dragGlyph}>
-            ≡
-          </Text>
-        </View>
-      </GestureDetector>
-      <Pressable
-        accessibilityLabel={`Edit Clip ${index + 1}, ${source?.displayName ?? 'Unknown source'}, start ${formatTimelineTime(clip.startMs)}, end ${formatTimelineTime(clip.endMs)}`}
-        accessibilityRole="button"
-        disabled={disabled}
-        onPress={() => onEdit(clip)}
-        style={({ pressed }) => [styles.rowBody, pressed && styles.pressed]}
-      >
-        <View style={styles.leftCopy}>
-          <Text numberOfLines={1} style={styles.clipNumber}>
-            Clip {index + 1}
-          </Text>
-          <Text numberOfLines={1} style={styles.sourceName}>
-            {source?.displayName ?? 'Unknown source'}
-          </Text>
-        </View>
-        <View style={styles.rangeCopy}>
-          <Text numberOfLines={1} style={styles.rangeText}>
-            Start {formatTimelineTime(clip.startMs)}
-          </Text>
-          <Text numberOfLines={1} style={styles.rangeText}>
-            End {formatTimelineTime(clip.endMs)}
-          </Text>
-        </View>
-      </Pressable>
+          <View style={styles.leftCopy}>
+            <Text numberOfLines={1} style={styles.clipNumber}>
+              Clip {index + 1}
+            </Text>
+            <Text numberOfLines={1} style={styles.sourceName}>
+              {source?.displayName ?? 'Unknown source'}
+            </Text>
+          </View>
+          <View style={styles.rangeCopy}>
+            <Text numberOfLines={1} style={styles.rangeText}>
+              Start {formatTimelineTime(clip.startMs)}
+            </Text>
+            <Text numberOfLines={1} style={styles.rangeText}>
+              End {formatTimelineTime(clip.endMs)}
+            </Text>
+          </View>
+        </Pressable>
+      </View>
+      {crossfade ? (
+        <GestureDetector gesture={crossfadeGesture}>
+          <View style={styles.crossfadeRow} testID={`crossfade-row-${crossfade.id}`}>
+            <Text accessibilityElementsHidden style={styles.crossfadeGlyph}>
+              ⇄
+            </Text>
+            <Pressable
+              accessibilityLabel={`Edit ${crossfade.durationMs / 1_000} second crossfade after Clip ${index + 1}`}
+              accessibilityRole="button"
+              disabled={disabled}
+              onPress={() => onEditCrossfade(crossfade)}
+              style={styles.crossfadeEdit}
+            >
+              <Text style={styles.crossfadeText}>Crossfade {crossfade.durationMs / 1_000}s</Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel={`Delete crossfade after Clip ${index + 1}`}
+              accessibilityRole="button"
+              disabled={disabled}
+              onPress={() => onDeleteCrossfade(crossfade.id)}
+              style={styles.crossfadeDelete}
+            >
+              <Text accessibilityElementsHidden style={styles.crossfadeDeleteText}>
+                ×
+              </Text>
+            </Pressable>
+          </View>
+        </GestureDetector>
+      ) : null}
     </View>
   );
 }
 
 interface SequentialClipListProps {
   clips: readonly SnapCutClip[];
+  crossfades?: readonly SnapCutCrossfade[];
   sources: readonly SnapCutSource[];
   disabled?: boolean;
   onEdit: (clip: SnapCutClip) => void;
+  onDeleteCrossfade?: ((crossfadeId: string) => void) | undefined;
+  onEditCrossfade?: ((crossfade: SnapCutCrossfade) => void) | undefined;
   onInteractionStart?: () => void;
   onReorder: (clipId: string, destinationIndex: number) => void | Promise<unknown>;
+  onMoveCrossfade?:
+    | ((crossfadeId: string, destinationBoundaryIndex: number) => void | Promise<unknown>)
+    | undefined;
 }
 
 export function SequentialClipList({
   clips,
+  crossfades = [],
   sources,
   disabled = false,
   onEdit,
+  onDeleteCrossfade = () => undefined,
+  onEditCrossfade = () => undefined,
   onInteractionStart,
   onReorder,
+  onMoveCrossfade = () => undefined,
 }: SequentialClipListProps) {
   const listRef = useRef<FlatList<SnapCutClip>>(null);
   const scrollOffsetRef = useRef(0);
@@ -154,6 +220,25 @@ export function SequentialClipList({
   const sourcesById = useMemo(
     () => new Map(sources.map((source) => [source.id, source])),
     [sources],
+  );
+  const crossfadesByLeftClipId = useMemo(
+    () => new Map(crossfades.map((crossfade) => [crossfade.leftClipId, crossfade])),
+    [crossfades],
+  );
+  const rowHeights = useMemo(
+    () =>
+      clips.map(
+        (clip) =>
+          ROW_SLOT_HEIGHT + (crossfadesByLeftClipId.has(clip.id) ? CROSSFADE_ROW_HEIGHT : 0),
+      ),
+    [clips, crossfadesByLeftClipId],
+  );
+  const rowOffsets = useMemo(
+    () =>
+      rowHeights.map((_height, index) =>
+        rowHeights.slice(0, index).reduce((sum, height) => sum + height, 0),
+      ),
+    [rowHeights],
   );
 
   const onLayout = (event: LayoutChangeEvent) => {
@@ -168,7 +253,10 @@ export function SequentialClipList({
   };
 
   const scrollBy = (delta: number) => {
-    const maximum = Math.max(0, clips.length * ROW_SLOT_HEIGHT - listHeightRef.current);
+    const maximum = Math.max(
+      0,
+      rowHeights.reduce((sum, height) => sum + height, 0) - listHeightRef.current,
+    );
     const next = Math.min(Math.max(scrollOffsetRef.current + delta, 0), maximum);
     if (next === scrollOffsetRef.current) return;
     scrollOffsetRef.current = next;
@@ -181,8 +269,8 @@ export function SequentialClipList({
       data={[...clips]}
       getItemLayout={(_data, index) => ({
         index,
-        length: ROW_SLOT_HEIGHT,
-        offset: ROW_SLOT_HEIGHT * index,
+        length: rowHeights[index] ?? ROW_SLOT_HEIGHT,
+        offset: rowOffsets[index] ?? 0,
       })}
       keyExtractor={(clip) => clip.id}
       ListEmptyComponent={
@@ -199,6 +287,7 @@ export function SequentialClipList({
           clip={clip}
           clipCount={clips.length}
           disabled={disabled}
+          crossfade={crossfadesByLeftClipId.get(clip.id)}
           index={index}
           onDragEnd={(translationY) => {
             const draggedId = draggingClipIdRef.current;
@@ -223,9 +312,15 @@ export function SequentialClipList({
             onInteractionStart?.();
           }}
           onEdit={onEdit}
+          onDeleteCrossfade={onDeleteCrossfade}
+          onEditCrossfade={onEditCrossfade}
           onMove={(destinationIndex) => {
             onInteractionStart?.();
             void onReorder(clip.id, destinationIndex);
+          }}
+          onMoveCrossfade={(crossfadeId, destinationBoundaryIndex) => {
+            onInteractionStart?.();
+            void onMoveCrossfade(crossfadeId, destinationBoundaryIndex);
           }}
           source={sourcesById.get(clip.sourceId)}
         />
@@ -248,9 +343,11 @@ const styles = StyleSheet.create({
     flexGrow: 1,
   },
   row: {
+    marginBottom: ROW_GAP,
+  },
+  clipRow: {
     ...layout.card,
     height: SEQUENTIAL_CLIP_ROW_HEIGHT,
-    marginBottom: ROW_GAP,
     flexDirection: 'row',
     overflow: 'hidden',
   },
@@ -303,6 +400,29 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontVariant: ['tabular-nums'],
   },
+  crossfadeRow: {
+    height: CROSSFADE_ROW_HEIGHT,
+    marginHorizontal: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: colors.focus,
+    borderBottomLeftRadius: radii.md,
+    borderBottomRightRadius: radii.md,
+    backgroundColor: colors.accentTranslucent,
+  },
+  crossfadeGlyph: { width: minimumTouchTarget, textAlign: 'center', color: colors.textSecondary },
+  crossfadeEdit: { flex: 1, minHeight: minimumTouchTarget, justifyContent: 'center' },
+  crossfadeText: { ...typography.label, color: colors.textPrimary },
+  crossfadeDelete: {
+    width: minimumTouchTarget,
+    height: minimumTouchTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  crossfadeDeleteText: { color: colors.error, fontSize: 26, lineHeight: 28 },
   pressed: {
     backgroundColor: colors.accentTranslucent,
   },

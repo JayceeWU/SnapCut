@@ -85,7 +85,6 @@ export const copy = {
     estimatedSize: (value: string) => `Estimated size: ${value}`,
     m4a: 'M4A · No re-encoding',
     m4aReencoded: 'M4A · Re-encoded AAC',
-    flac: 'FLAC · Lossless',
     mp3: 'MP3 · 320 kbps',
     mixClippingWarning:
       'Overlapping tracks may clip. SnapCut hard-limits samples that exceed the valid audio range.',

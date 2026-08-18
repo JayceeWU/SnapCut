@@ -44,7 +44,9 @@ const inspection: SourceInspection = {
 
 function emptyProject(): SnapCutProject {
   return {
-    schemaVersion: 7,
+    schemaVersion: 9,
+    crossfades: [],
+    sourceComparisons: [],
     namePromptCompleted: true,
     id: PROJECT_ID,
     name: 'Project',
@@ -247,10 +249,7 @@ describe('ImportCoordinator', () => {
     expect(second.status).toBe('imported');
     expect(repository.finalized).toHaveLength(2);
     expect(scheduled).toHaveLength(2);
-    expect(repository.project.sources.map(({ displayName }) => displayName)).toEqual([
-      'Source 1',
-      'Source 2',
-    ]);
+    expect(repository.project.sources.map(({ displayName }) => displayName)).toEqual(['S1', 'S2']);
     expect(repository.project.clips).toEqual([]);
     expect(JSON.stringify(repository.finalized)).not.toContain('content://');
     expect(JSON.stringify(repository.project)).not.toContain('content://');

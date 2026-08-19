@@ -5,9 +5,6 @@ video. Each project has a private media library and one ordered Clip list: the C
 final playback and export order, every Clip starts immediately after the previous one, and edits
 never rewrite the imported source.
 
-> **Engineering status:** SnapCut is unreleased. The current tree uses only project schema v9.
-> API 29/36 and physical-device media acceptance remain pending.
-
 ## What it does
 
 - Imports one local M4A/AAC, MP3, FLAC, WAV, supported MP4/MOV audio track, or self-contained M4S
@@ -145,8 +142,8 @@ Documents/SnapCut/
   staging/                         # import/delete journals and app-owned partials
 ```
 
-SnapCut accepts only the current schema-v9 project format. This unreleased build contains no
-project-schema migration path. The storage-generation marker protects the app-private directory
+SnapCut accepts only the current schema-v9 project format. The storage-generation marker protects
+the app-private directory
 layout; when the marker is absent, SnapCut performs a bounded, restartable cleanup before writing
 it atomically. Cleanup does **not** delete the system-picker source, published MediaStore exports
 under `Music/SnapCut`, or `diagnostics.json`.

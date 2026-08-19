@@ -142,8 +142,8 @@ Documents/SnapCut/
   staging/                         # import/delete journals and app-owned partials
 ```
 
-SnapCut accepts only the current schema-v9 project format and contains no project-schema migration
-path. The storage-generation marker protects the app-private directory
+SnapCut accepts only the current schema-v9 project format. The storage-generation marker protects
+the app-private directory
 layout; when the marker is absent, SnapCut performs a bounded, restartable cleanup before writing
 it atomically. Cleanup does **not** delete the system-picker source, published MediaStore exports
 under `Music/SnapCut`, or `diagnostics.json`.
